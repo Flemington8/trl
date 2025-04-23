@@ -691,7 +691,7 @@ class GRPOTrainer(Trainer):
     # The only change from the original implementation is multiplying the batch size by `gradient_accumulation_steps`.
     # Thus, `_prepare_inputs` is called with the accumulated batch size, and it handles the splitting internally.
     # Maintenance note: This method is a copy-paste of the original `Trainer.get_train_dataloader` with only one line
-    # modification.As a result, some parts of the method aren't relevant to GRPO, but we keep them to stay one line
+    # modification. As a result, some parts of the method aren't relevant to GRPO, but we keep them to stay one line
     # apart from the super method, ensuring easier maintenance in the future.
     def get_train_dataloader(self):
         if self.train_dataset is None:
@@ -1195,25 +1195,11 @@ class GRPOTrainer(Trainer):
     ) -> dict[str, Union[torch.Tensor, Any]]:
         pass
 
-    def _generate_and_score_conversations(
+    def _process_and_score_conversations(
         self, inputs: dict[str, Union[torch.Tensor, Any]]
     ) -> dict[str, Union[torch.Tensor, Any]]:
         device = self.accelerator.device
         mode = "eval" if self.control.should_evaluate else "train"
-
-        # Extract prompts and format them using the chat template
-        prompts = [x["prompt"] for x in inputs]
-        prompts_text = [maybe_apply_chat_template(example, self.processing_class)["prompt"] for example in inputs]
-        prompt_inputs = self.processing_class(
-            text=prompts_text, return_tensors="pt", padding=True, padding_side="left", add_special_tokens=False
-        )
-        prompt_inputs = super()._prepare_inputs(prompt_inputs)
-        prompt_ids, prompt_mask = prompt_inputs["input_ids"], prompt_inputs["attention_mask"]
-
-        # Truncate prompts if max_prompt_length is specified
-        if self.max_prompt_length is not None:
-            prompt_ids = prompt_ids[:, -self.max_prompt_length :]
-            prompt_mask = prompt_mask[:, -self.max_prompt_length :]
 
         # Generate conversations using outer API
         conversations = self._generate_conversations(prompts, pid)
@@ -1232,45 +1218,6 @@ class GRPOTrainer(Trainer):
 
         logits_to_keep = completions_ids.size(1)  # we only need to compute the logits for the completions tokens
         batch_size = self.args.per_device_train_batch_size if mode == "train" else self.args.per_device_eval_batch_size
-
-        with torch.no_grad():
-            # Compute per-token log probabilities for the generated completions
-            old_per_token_logps = self._get_per_token_logps(
-                self.model, conversation_ids, attention_mask, logits_to_keep, batch_size
-            )
-
-            # Compute rewards for each completion using the specified reward functions
-            rewards_per_func = torch.zeros(len(prompts), len(self.reward_funcs), device=device)
-            for i, (reward_func, reward_processing_class) in enumerate(zip(self.reward_funcs, self.reward_processing_classes)):
-                reward_func_name = reward_func.__name__ if not isinstance(reward_func, nn.Module) else reward_func.config._name_or_path.split("/")[-1]
-                with profiling_context(self, reward_func_name):
-                    if isinstance(reward_func, nn.Module):
-                        messages = [{"messages": p + c} for p, c in zip(prompts, completions)]
-                        texts = [apply_chat_template(x, reward_processing_class)["text"] for x in messages]
-                        reward_inputs = reward_processing_class(
-                            text=texts, return_tensors="pt", padding=True, padding_side="right", add_special_tokens=False
-                        )
-                        reward_inputs = super()._prepare_inputs(reward_inputs)
-                        with torch.inference_mode():
-                            rewards_per_func[:, i] = reward_func(**reward_inputs).logits[:, 0]
-                    else:
-                        output_reward_func = reward_func(prompts=prompts, completions=completions)
-                        rewards_per_func[:, i] = torch.tensor(output_reward_func, dtype=torch.float32, device=device)
-
-            # Normalize rewards to compute advantages
-            rewards = (rewards_per_func * self.reward_weights.to(device).unsqueeze(0)).nansum(dim=1)
-            mean_grouped_rewards = rewards.view(-1, self.num_generations).mean(dim=1)
-            std_grouped_rewards = rewards.view(-1, self.num_generations).std(dim=1)
-            advantages = rewards - mean_grouped_rewards
-            if self.scale_rewards:
-                advantages = advantages / (std_grouped_rewards + 1e-4)
-
-            # Slice to keep only the local part of the data
-            process_slice = slice(
-                self.accelerator.process_index * len(prompts),
-                (self.accelerator.process_index + 1) * len(prompts),
-            )
-            advantages = advantages[process_slice]
 
         return {
             "prompt_ids": prompt_ids,
