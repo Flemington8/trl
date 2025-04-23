@@ -813,35 +813,59 @@ class GRPOTrainer(Trainer):
                 - L is the length of the input sequence (prompt + completion).
             attention_mask (`torch.Tensor`): The attention mask, shape (B, L).
                 - 1 for tokens to attend to, 0 for padding tokens.
-            logits_to_keep (`int`): Number of completion tokens to compute log probs for.
+            logits_to_keep (int or torch.Tensor, optional) 
+                - If an int, compute logits for the last logits_to_keep tokens. 
+                - If a torch.Tensor, must be 1D corresponding to the indices to keep in the sequence length dimension.
             batch_size (`int`, *optional*): Batch size for processing. If `None`, uses input_ids.size(0).
 
         Returns:
             `torch.Tensor`: Log probabilities for each actual token in the completions.
-            Shape is (B, logits_to_keep), where:
+            Shape is (B, length of logits_to_keep), where:
                 - Each value is the log probability that the model assigned to the token
                 that was actually generated at that position.
         """
         batch_size = batch_size or input_ids.size(0)  # Chunk inputs into smaller batches to reduce memory peak
         all_logps = []
-        for i in range(0, input_ids.size(0), batch_size):
-            input_ids_batch = input_ids[i : i + batch_size]
-            attention_mask_batch = attention_mask[i : i + batch_size]
 
-            # We add 1 to `logits_to_keep` because the last logits of the sequence is later excluded
-            logits = model(
-                input_ids=input_ids_batch, attention_mask=attention_mask_batch, logits_to_keep=logits_to_keep + 1
-            ).logits # shape: (batch_size, seq_length, vocab_size)
-            logits = logits[:, :-1, :]  # (B, L-1, V), exclude the last logit: it corresponds to the next token pred
-            input_ids_batch = input_ids_batch[:, -logits_to_keep:]
-            # For transformers<=4.48, logits_to_keep argument isn't supported, so here we drop logits ourselves.
-            # See https://github.com/huggingface/trl/issues/2770
-            logits = logits[:, -logits_to_keep:]  # shape: (B, logits_to_keep, V)
-            # Divide logits by sampling temperature.
-            # See https://huggingface.co/blog/the_n_implementation_details_of_rlhf_with_ppo#policy-training-implementation-details
-            logits = logits / self.temperature
-            logps = selective_log_softmax(logits, input_ids_batch)  # compute logprobs for the input tokens
-            all_logps.append(logps)
+        if isinstance(logits_to_keep, int):
+            for i in range(0, input_ids.size(0), batch_size):
+                input_ids_batch = input_ids[i : i + batch_size]
+                attention_mask_batch = attention_mask[i : i + batch_size]
+
+                # We add 1 to `logits_to_keep` because the last logits of the sequence is later excluded
+                logits = model(
+                    input_ids=input_ids_batch, attention_mask=attention_mask_batch, logits_to_keep=logits_to_keep + 1
+                ).logits # shape: (batch_size, seq_length, vocab_size)
+                logits = logits[:, :-1, :]  # (B, L-1, V), exclude the last logit: it corresponds to the next token pred
+                input_ids_batch = input_ids_batch[:, -logits_to_keep:]
+                # For transformers<=4.48, logits_to_keep argument isn't supported, so here we drop logits ourselves.
+                # See https://github.com/huggingface/trl/issues/2770
+                logits = logits[:, -logits_to_keep:]  # shape: (B, logits_to_keep, V)
+                # Divide logits by sampling temperature.
+                # See https://huggingface.co/blog/the_n_implementation_details_of_rlhf_with_ppo#policy-training-implementation-details
+                logits = logits / self.temperature
+                logps = selective_log_softmax(logits, input_ids_batch)  # compute logprobs for the input tokens
+                all_logps.append(logps)
+        else:
+            # logits_to_keep is a BoolTensor
+            for i in range(0, input_ids.size(0), batch_size):
+                input_ids_batch = input_ids[i : i + batch_size]
+                attention_mask_batch = attention_mask[i : i + batch_size]
+                logits_to_keep_batch = logits_to_keep.unsqueeze(0).expand_as(input_ids_batch)
+
+                logits = model(
+                    input_ids=input_ids_batch, attention_mask=attention_mask_batch, logits_to_keep=logits_to_keep
+                ).logits # shape: (batch_size, seq_length, vocab_size)
+                logits = logits[:, :-1, :]  # (B, L-1, V), exclude the last logit: it corresponds to the next token pred
+                input_ids_batch = input_ids_batch[logits_to_keep_batch].view(batch_size, -1) # shape: (B, length_of_logits_to_keep)
+                # For transformers<=4.48, logits_to_keep argument isn't supported, so here we drop logits ourselves.
+                # See https://github.com/huggingface/trl/issues/2770
+                logits = logits[logits_to_keep_batch].reshape(batch_size, -1, logits.size(-1)) # shape: (B, length_of_logits_to_keep, V)
+                # Divide logits by sampling temperature.
+                # See https://huggingface.co/blog/the_n_implementation_details_of_rlhf_with_ppo#policy-training-implementation-details
+                logits = logits / self.temperature
+                logps = selective_log_softmax(logits, input_ids_batch)  # compute logprobs for the input tokens
+                all_logps.append(logps)
         return torch.cat(all_logps, dim=0)
 
     @profiling_decorator
@@ -1166,6 +1190,11 @@ class GRPOTrainer(Trainer):
             "ref_per_token_logps": ref_per_token_logps,
         }
 
+    def _generate_conversations(
+        self, inputs: list[dict[str, Union[torch.Tensor, Any]]]
+    ) -> dict[str, Union[torch.Tensor, Any]]:
+        pass
+
     def _generate_and_score_conversations(
         self, inputs: dict[str, Union[torch.Tensor, Any]]
     ) -> dict[str, Union[torch.Tensor, Any]]:
@@ -1186,34 +1215,28 @@ class GRPOTrainer(Trainer):
             prompt_ids = prompt_ids[:, -self.max_prompt_length :]
             prompt_mask = prompt_mask[:, -self.max_prompt_length :]
 
-        # Generate completions using the model
-        with unwrap_model_for_generation(self.model_wrapped, self.accelerator) as unwrapped_model:
-            prompt_completion_ids = unwrapped_model.generate(
-                prompt_ids, attention_mask=prompt_mask, generation_config=self.generation_config
-            )
+        # Generate conversations using outer API
+        conversations = self._generate_conversations(prompts, pid)
 
-        # Compute prompt length and extract completion ids
-        prompt_length = prompt_ids.size(1)
-        prompt_ids = prompt_completion_ids[:, :prompt_length]
-        completion_ids = prompt_completion_ids[:, prompt_length:]
-
-        # Mask everything after the first EOS token
-        is_eos = completion_ids == self.processing_class.eos_token_id
-        eos_idx = torch.full((is_eos.size(0),), is_eos.size(1), dtype=torch.long, device=device)
-        eos_idx[is_eos.any(dim=1)] = is_eos.int().argmax(dim=1)[is_eos.any(dim=1)]
-        sequence_indices = torch.arange(is_eos.size(1), device=device).expand(is_eos.size(0), -1)
-        completion_mask = (sequence_indices <= eos_idx.unsqueeze(1)).int()
+        for i, conversation in enumerate(conversations):
+            completion_ids = conversation["completion_ids"]
+            # Mask everything after the first EOS token
+            is_eos = completion_ids == self.processing_class.eos_token_id
+            eos_idx = torch.full((is_eos.size(0),), is_eos.size(1), dtype=torch.long, device=device)
+            eos_idx[is_eos.any(dim=1)] = is_eos.int().argmax(dim=1)[is_eos.any(dim=1)]
+            sequence_indices = torch.arange(is_eos.size(1), device=device).expand(is_eos.size(0), -1)
+            completion_mask = (sequence_indices <= eos_idx.unsqueeze(1)).int()
 
         # Concatenate prompt_mask with completion_mask for logit computation
         attention_mask = torch.cat([prompt_mask, completion_mask], dim=1)
 
-        logits_to_keep = completion_ids.size(1)  # we only need to compute the logits for the completion tokens
+        logits_to_keep = completions_ids.size(1)  # we only need to compute the logits for the completions tokens
         batch_size = self.args.per_device_train_batch_size if mode == "train" else self.args.per_device_eval_batch_size
 
         with torch.no_grad():
             # Compute per-token log probabilities for the generated completions
             old_per_token_logps = self._get_per_token_logps(
-                self.model, prompt_completion_ids, attention_mask, logits_to_keep, batch_size
+                self.model, conversation_ids, attention_mask, logits_to_keep, batch_size
             )
 
             # Compute rewards for each completion using the specified reward functions
@@ -1254,7 +1277,7 @@ class GRPOTrainer(Trainer):
             "prompt_mask": prompt_mask,
             "completion_ids": completion_ids,
             "completion_mask": completion_mask,
-            "advantages": advantages,
+            "advantages": advantages, # multi-turn conversation level
             "old_per_token_logps": old_per_token_logps,
         }
 
@@ -1301,69 +1324,132 @@ class GRPOTrainer(Trainer):
         else:
             return self._compute_loss(model, inputs)
 
-    def _compute_loss(self, model, inputs):
-        # Compute the per-token log probabilities for the model
-        prompt_ids, prompt_mask = inputs["prompt_ids"], inputs["prompt_mask"]
-        completion_ids, completion_mask = inputs["completion_ids"], inputs["completion_mask"]
-        input_ids = torch.cat([prompt_ids, completion_ids], dim=1)
-        attention_mask = torch.cat([prompt_mask, completion_mask], dim=1)
-        logits_to_keep = completion_ids.size(1)  # we only need to compute the logits for the completion tokens
+    def _compute_loss(self, model, inputs, is_conversational=False):
+        if not is_conversational:
+            # Compute the per-token log probabilities for the model
+            prompt_ids, prompt_mask = inputs["prompt_ids"], inputs["prompt_mask"]
+            completion_ids, completion_mask = inputs["completion_ids"], inputs["completion_mask"]
+            input_ids = torch.cat([prompt_ids, completion_ids], dim=1)
+            attention_mask = torch.cat([prompt_mask, completion_mask], dim=1)
+            logits_to_keep = completion_ids.size(1)  # we only need to compute the logits for the completion tokens         
 
-        per_token_logps = self._get_per_token_logps(model, input_ids, attention_mask, logits_to_keep) # shape (batch_size, logits_to_keep)
+            per_token_logps = self._get_per_token_logps(model, input_ids, attention_mask, logits_to_keep) # shape (batch_size, logits_to_keep)
 
-        # Compute the KL divergence between the model and the reference model
-        if self.beta != 0.0:
-            ref_per_token_logps = inputs["ref_per_token_logps"]
-            per_token_kl = (
-                torch.exp(ref_per_token_logps - per_token_logps) - (ref_per_token_logps - per_token_logps) - 1
-            )
+            # Compute the KL divergence between the model and the reference model
+            if self.beta != 0.0:
+                ref_per_token_logps = inputs["ref_per_token_logps"]
+                per_token_kl = (
+                    torch.exp(ref_per_token_logps - per_token_logps) - (ref_per_token_logps - per_token_logps) - 1
+                )
 
-        # Compute the loss
-        advantages = inputs["advantages"]
-        # When using num_iterations == 1, old_per_token_logps == per_token_logps, so we can skip it's computation (see
-        # _generate_and_score_completions) and use per_token_logps.detach() instead.
-        old_per_token_logps = inputs["old_per_token_logps"] if self.num_iterations > 1 else per_token_logps.detach()
-        coef_1 = torch.exp(per_token_logps - old_per_token_logps)
-        coef_2 = torch.clamp(coef_1, 1 - self.epsilon_low, 1 + self.epsilon_high)
-        per_token_loss1 = coef_1 * advantages.unsqueeze(1)
-        per_token_loss2 = coef_2 * advantages.unsqueeze(1)
-        per_token_loss = -torch.min(per_token_loss1, per_token_loss2)
-        if self.beta != 0.0:
-            per_token_loss = per_token_loss + self.beta * per_token_kl
+            # Compute the loss
+            advantages = inputs["advantages"]
+            # When using num_iterations == 1, old_per_token_logps == per_token_logps, so we can skip it's computation (see
+            # _generate_and_score_completions) and use per_token_logps.detach() instead.
+            old_per_token_logps = inputs["old_per_token_logps"] if self.num_iterations > 1 else per_token_logps.detach()
+            coef_1 = torch.exp(per_token_logps - old_per_token_logps)
+            coef_2 = torch.clamp(coef_1, 1 - self.epsilon_low, 1 + self.epsilon_high)
+            per_token_loss1 = coef_1 * advantages.unsqueeze(1)
+            per_token_loss2 = coef_2 * advantages.unsqueeze(1)
+            per_token_loss = -torch.min(per_token_loss1, per_token_loss2)
+            if self.beta != 0.0:
+                per_token_loss = per_token_loss + self.beta * per_token_kl
 
-        if self.loss_type == "grpo":
-            loss = ((per_token_loss * completion_mask).sum(-1) / completion_mask.sum(-1).clamp(min=1.0)).mean()
-        elif self.loss_type == "bnpo":
-            loss = (per_token_loss * completion_mask).sum() / completion_mask.sum().clamp(min=1.0)
-        elif self.loss_type == "dr_grpo":
-            loss = (per_token_loss * completion_mask).sum() / (per_token_loss.size(0) * self.max_completion_length)
+            if self.loss_type == "grpo":
+                loss = ((per_token_loss * completion_mask).sum(-1) / completion_mask.sum(-1).clamp(min=1.0)).mean()
+            elif self.loss_type == "bnpo":
+                loss = (per_token_loss * completion_mask).sum() / completion_mask.sum().clamp(min=1.0)
+            elif self.loss_type == "dr_grpo":
+                loss = (per_token_loss * completion_mask).sum() / (per_token_loss.size(0) * self.max_completion_length)
+            else:
+                raise ValueError(f"Unknown loss type: {self.loss_type}")
+
+            # Log the metrics
+            mode = "eval" if self.control.should_evaluate else "train"
+
+            if self.beta != 0.0:
+                mean_kl = (per_token_kl * completion_mask).sum() / completion_mask.sum()
+                self._metrics[mode]["kl"].append(self.accelerator.gather_for_metrics(mean_kl).nanmean().item())
+
+            # Compute the clipped probability ratios
+            is_low_clipped = (coef_1 < 1 - self.epsilon_low) & (advantages.unsqueeze(1) < 0)
+            is_high_clipped = (coef_1 > 1 + self.epsilon_high) & (advantages.unsqueeze(1) > 0)
+            is_region_clipped = is_low_clipped | is_high_clipped
+
+            low_clip = (is_low_clipped * completion_mask).sum() / completion_mask.sum()
+            high_clip = (is_high_clipped * completion_mask).sum() / completion_mask.sum()
+            clip_ratio = (is_region_clipped * completion_mask).sum() / completion_mask.sum()
+
+            gathered_low_clip = self.accelerator.gather_for_metrics(low_clip)
+            self._metrics[mode]["clip_ratio/low_mean"].append(gathered_low_clip.nanmean().item())
+            self._metrics[mode]["clip_ratio/low_min"].append(nanmin(gathered_low_clip).item())
+            gathered_high_clip = self.accelerator.gather_for_metrics(high_clip)
+            self._metrics[mode]["clip_ratio/high_mean"].append(gathered_high_clip.nanmean().item())
+            self._metrics[mode]["clip_ratio/high_max"].append(nanmax(gathered_high_clip).item())
+            gathered_clip_ratio = self.accelerator.gather_for_metrics(clip_ratio)
+            self._metrics[mode]["clip_ratio/region_mean"].append(gathered_clip_ratio.nanmean().item())
         else:
-            raise ValueError(f"Unknown loss type: {self.loss_type}")
+            input_ids = inputs["conversation_ids"]
+            completion_mask = input["completion_mask"] # shape (B, total_completion_length)
+            attention_mask = input["attention_mask"] # shape (B, L)
+            logits_to_keep_mask = input["logits_to_keep_mask"] # the part of completions in a multi-turn conversation, shape (B, L)
 
-        # Log the metrics
-        mode = "eval" if self.control.should_evaluate else "train"
+            per_token_logps = self._get_per_token_logps(model, input_ids, attention_mask, logits_to_keep_mask) # shape (batch_size, length_of_logits_to_keep), and the length is the same as completion_mask
 
-        if self.beta != 0.0:
-            mean_kl = (per_token_kl * completion_mask).sum() / completion_mask.sum()
-            self._metrics[mode]["kl"].append(self.accelerator.gather_for_metrics(mean_kl).nanmean().item())
+            # Compute the KL divergence between the model and the reference model
+            if self.beta != 0.0:
+                ref_per_token_logps = inputs["ref_per_token_logps"]
+                per_token_kl = (
+                    torch.exp(ref_per_token_logps - per_token_logps) - (ref_per_token_logps - per_token_logps) - 1
+                )
 
-        # Compute the clipped probability ratios
-        is_low_clipped = (coef_1 < 1 - self.epsilon_low) & (advantages.unsqueeze(1) < 0)
-        is_high_clipped = (coef_1 > 1 + self.epsilon_high) & (advantages.unsqueeze(1) > 0)
-        is_region_clipped = is_low_clipped | is_high_clipped
+            # Compute the loss
+            advantages = inputs["advantages"]
+            # When using num_iterations == 1, old_per_token_logps == per_token_logps, so we can skip it's computation (see
+            # _generate_and_score_completions) and use per_token_logps.detach() instead.
+            old_per_token_logps = inputs["old_per_token_logps"] if self.num_iterations > 1 else per_token_logps.detach()
+            coef_1 = torch.exp(per_token_logps - old_per_token_logps) # shape (batch_size, length_of_logits_to_keep)
+            coef_2 = torch.clamp(coef_1, 1 - self.epsilon_low, 1 + self.epsilon_high)
+            per_token_loss1 = coef_1 * advantages.unsqueeze(1) # shape (batch_size, length_of_logits_to_keep)
+            per_token_loss2 = coef_2 * advantages.unsqueeze(1)
+            per_token_loss = -torch.min(per_token_loss1, per_token_loss2) # shape (batch_size, length_of_logits_to_keep)
+            if self.beta != 0.0:
+                per_token_loss = per_token_loss + self.beta * per_token_kl
 
-        low_clip = (is_low_clipped * completion_mask).sum() / completion_mask.sum()
-        high_clip = (is_high_clipped * completion_mask).sum() / completion_mask.sum()
-        clip_ratio = (is_region_clipped * completion_mask).sum() / completion_mask.sum()
+            if self.loss_type == "grpo":
+                loss = ((per_token_loss * completion_mask).sum(-1) / completion_mask.sum(-1).clamp(min=1.0)).mean()
+            elif self.loss_type == "bnpo":
+                loss = (per_token_loss * completion_mask).sum() / completion_mask.sum().clamp(min=1.0)
+            elif self.loss_type == "dr_grpo":
+                loss = (per_token_loss * completion_mask).sum() / (per_token_loss.size(0) * self.max_completion_length)
+            else:
+                raise ValueError(f"Unknown loss type: {self.loss_type}")
 
-        gathered_low_clip = self.accelerator.gather_for_metrics(low_clip)
-        self._metrics[mode]["clip_ratio/low_mean"].append(gathered_low_clip.nanmean().item())
-        self._metrics[mode]["clip_ratio/low_min"].append(nanmin(gathered_low_clip).item())
-        gathered_high_clip = self.accelerator.gather_for_metrics(high_clip)
-        self._metrics[mode]["clip_ratio/high_mean"].append(gathered_high_clip.nanmean().item())
-        self._metrics[mode]["clip_ratio/high_max"].append(nanmax(gathered_high_clip).item())
-        gathered_clip_ratio = self.accelerator.gather_for_metrics(clip_ratio)
-        self._metrics[mode]["clip_ratio/region_mean"].append(gathered_clip_ratio.nanmean().item())
+            # # Log the metrics
+            # mode = "eval" if self.control.should_evaluate else "train"
+
+            # if self.beta != 0.0:
+            #     mean_kl = (per_token_kl * completion_mask).sum() / completion_mask.sum()
+            #     self._metrics[mode]["kl"].append(self.accelerator.gather_for_metrics(mean_kl).nanmean().item())
+
+            # # Compute the clipped probability ratios
+            # is_low_clipped = (coef_1 < 1 - self.epsilon_low) & (advantages.unsqueeze(1) < 0)
+            # is_high_clipped = (coef_1 > 1 + self.epsilon_high) & (advantages.unsqueeze(1) > 0)
+            # is_region_clipped = is_low_clipped | is_high_clipped
+
+            # low_clip = (is_low_clipped * completion_mask).sum() / completion_mask.sum()
+            # high_clip = (is_high_clipped * completion_mask).sum() / completion_mask.sum()
+            # clip_ratio = (is_region_clipped * completion_mask).sum() / completion_mask.sum()
+
+            # gathered_low_clip = self.accelerator.gather_for_metrics(low_clip)
+            # self._metrics[mode]["clip_ratio/low_mean"].append(gathered_low_clip.nanmean().item())
+            # self._metrics[mode]["clip_ratio/low_min"].append(nanmin(gathered_low_clip).item())
+            # gathered_high_clip = self.accelerator.gather_for_metrics(high_clip)
+            # self._metrics[mode]["clip_ratio/high_mean"].append(gathered_high_clip.nanmean().item())
+            # self._metrics[mode]["clip_ratio/high_max"].append(nanmax(gathered_high_clip).item())
+            # gathered_clip_ratio = self.accelerator.gather_for_metrics(clip_ratio)
+            # self._metrics[mode]["clip_ratio/region_mean"].append(gathered_clip_ratio.nanmean().item())
+
         return loss
 
     def prediction_step(self, model, inputs, prediction_loss_only, ignore_keys: Optional[list[str]] = None):
