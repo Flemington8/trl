@@ -1,5 +1,5 @@
 from transformers import AutoTokenizer
-
+from trl import apply_chat_template
 
 
 tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen2.5-Coder-0.5B-Instruct")
@@ -64,21 +64,8 @@ conversation = [
     }
 ]
 
-flat = " ".join(f"[{m['role']}] {m['content']}" for m in conversation)
+result_prompt_completion = apply_chat_template(conversation, tokenizer)
 
-# 3. Tokenize
-batch = tokenizer(
-    [flat],
-    return_tensors="pt",
-    padding=True,
-    truncation=True,
-    max_length=512,
-)
-
-# 4. Access token IDs and tokens
-input_ids = batch["input_ids"]             # Tensor of shape [1, seq_len]
-attention_mask = batch["attention_mask"]
-
-tokens = tokenizer.convert_ids_to_tokens(input_ids[0])
-print("Tokens:", tokens)
-print("Token IDs:", input_ids[0].tolist())
+print("\n=== RLHF Format (prompt-completion) ===")
+print(f"Prompt: {result_prompt_completion['prompt']}")
+print(f"Completion: {result_prompt_completion['completion']}")
