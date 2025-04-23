@@ -778,6 +778,25 @@ class GRPOTrainer(Trainer):
     # Get the per-token log probabilities for the completions for the model and the reference model
     @profiling_decorator
     def _get_per_token_logps(self, model, input_ids, attention_mask, logits_to_keep, batch_size=None) -> torch.Tensor:
+        """
+        Get the per-token log probabilities for the tokens that were actually generated in the completions.
+
+        Args:
+            model (`PreTrainedModel`): The model to use for computing the log probabilities.
+            input_ids (`torch.Tensor`): The input IDs of the prompt and completion, shape (B, L).
+                - B is the batch size.
+                - L is the length of the input sequence (prompt + completion).
+            attention_mask (`torch.Tensor`): The attention mask, shape (B, L).
+                - 1 for tokens to attend to, 0 for padding tokens.
+            logits_to_keep (`int`): Number of completion tokens to compute log probs for.
+            batch_size (`int`, *optional*): Batch size for processing. If `None`, uses input_ids.size(0).
+
+        Returns:
+            `torch.Tensor`: Log probabilities for each actual token in the completions.
+            Shape is (B, logits_to_keep), where:
+                - Each value is the log probability that the model assigned to the token
+                that was actually generated at that position.
+        """
         batch_size = batch_size or input_ids.size(0)  # Chunk inputs into smaller batches to reduce memory peak
         all_logps = []
         for i in range(0, input_ids.size(0), batch_size):
@@ -787,12 +806,12 @@ class GRPOTrainer(Trainer):
             # We add 1 to `logits_to_keep` because the last logits of the sequence is later excluded
             logits = model(
                 input_ids=input_ids_batch, attention_mask=attention_mask_batch, logits_to_keep=logits_to_keep + 1
-            ).logits
+            ).logits # shape: (batch_size, seq_length, vocab_size)
             logits = logits[:, :-1, :]  # (B, L-1, V), exclude the last logit: it corresponds to the next token pred
             input_ids_batch = input_ids_batch[:, -logits_to_keep:]
             # For transformers<=4.48, logits_to_keep argument isn't supported, so here we drop logits ourselves.
             # See https://github.com/huggingface/trl/issues/2770
-            logits = logits[:, -logits_to_keep:]
+            logits = logits[:, -logits_to_keep:]  # shape: (B, logits_to_keep, V)
             # Divide logits by sampling temperature.
             # See https://huggingface.co/blog/the_n_implementation_details_of_rlhf_with_ppo#policy-training-implementation-details
             logits = logits / self.temperature
@@ -970,7 +989,7 @@ class GRPOTrainer(Trainer):
             if self.num_iterations > 1:
                 old_per_token_logps = self._get_per_token_logps(
                     self.model, prompt_completion_ids, attention_mask, logits_to_keep, batch_size
-                )
+                ) # shape (batch_size, logits_to_keep)
             else:
                 old_per_token_logps = None
 
@@ -1122,6 +1141,98 @@ class GRPOTrainer(Trainer):
             "ref_per_token_logps": ref_per_token_logps,
         }
 
+    def _generate_and_score_conversations(
+        self, inputs: dict[str, Union[torch.Tensor, Any]]
+    ) -> dict[str, Union[torch.Tensor, Any]]:
+        device = self.accelerator.device
+        mode = "eval" if self.control.should_evaluate else "train"
+
+        # Extract prompts and format them using the chat template
+        prompts = [x["prompt"] for x in inputs]
+        prompts_text = [maybe_apply_chat_template(example, self.processing_class)["prompt"] for example in inputs]
+        prompt_inputs = self.processing_class(
+            text=prompts_text, return_tensors="pt", padding=True, padding_side="left", add_special_tokens=False
+        )
+        prompt_inputs = super()._prepare_inputs(prompt_inputs)
+        prompt_ids, prompt_mask = prompt_inputs["input_ids"], prompt_inputs["attention_mask"]
+
+        # Truncate prompts if max_prompt_length is specified
+        if self.max_prompt_length is not None:
+            prompt_ids = prompt_ids[:, -self.max_prompt_length :]
+            prompt_mask = prompt_mask[:, -self.max_prompt_length :]
+
+        # Generate completions using the model
+        with unwrap_model_for_generation(self.model_wrapped, self.accelerator) as unwrapped_model:
+            prompt_completion_ids = unwrapped_model.generate(
+                prompt_ids, attention_mask=prompt_mask, generation_config=self.generation_config
+            )
+
+        # Compute prompt length and extract completion ids
+        prompt_length = prompt_ids.size(1)
+        prompt_ids = prompt_completion_ids[:, :prompt_length]
+        completion_ids = prompt_completion_ids[:, prompt_length:]
+
+        # Mask everything after the first EOS token
+        is_eos = completion_ids == self.processing_class.eos_token_id
+        eos_idx = torch.full((is_eos.size(0),), is_eos.size(1), dtype=torch.long, device=device)
+        eos_idx[is_eos.any(dim=1)] = is_eos.int().argmax(dim=1)[is_eos.any(dim=1)]
+        sequence_indices = torch.arange(is_eos.size(1), device=device).expand(is_eos.size(0), -1)
+        completion_mask = (sequence_indices <= eos_idx.unsqueeze(1)).int()
+
+        # Concatenate prompt_mask with completion_mask for logit computation
+        attention_mask = torch.cat([prompt_mask, completion_mask], dim=1)
+
+        logits_to_keep = completion_ids.size(1)  # we only need to compute the logits for the completion tokens
+        batch_size = self.args.per_device_train_batch_size if mode == "train" else self.args.per_device_eval_batch_size
+
+        with torch.no_grad():
+            # Compute per-token log probabilities for the generated completions
+            old_per_token_logps = self._get_per_token_logps(
+                self.model, prompt_completion_ids, attention_mask, logits_to_keep, batch_size
+            )
+
+            # Compute rewards for each completion using the specified reward functions
+            rewards_per_func = torch.zeros(len(prompts), len(self.reward_funcs), device=device)
+            for i, (reward_func, reward_processing_class) in enumerate(zip(self.reward_funcs, self.reward_processing_classes)):
+                reward_func_name = reward_func.__name__ if not isinstance(reward_func, nn.Module) else reward_func.config._name_or_path.split("/")[-1]
+                with profiling_context(self, reward_func_name):
+                    if isinstance(reward_func, nn.Module):
+                        messages = [{"messages": p + c} for p, c in zip(prompts, completions)]
+                        texts = [apply_chat_template(x, reward_processing_class)["text"] for x in messages]
+                        reward_inputs = reward_processing_class(
+                            text=texts, return_tensors="pt", padding=True, padding_side="right", add_special_tokens=False
+                        )
+                        reward_inputs = super()._prepare_inputs(reward_inputs)
+                        with torch.inference_mode():
+                            rewards_per_func[:, i] = reward_func(**reward_inputs).logits[:, 0]
+                    else:
+                        output_reward_func = reward_func(prompts=prompts, completions=completions)
+                        rewards_per_func[:, i] = torch.tensor(output_reward_func, dtype=torch.float32, device=device)
+
+            # Normalize rewards to compute advantages
+            rewards = (rewards_per_func * self.reward_weights.to(device).unsqueeze(0)).nansum(dim=1)
+            mean_grouped_rewards = rewards.view(-1, self.num_generations).mean(dim=1)
+            std_grouped_rewards = rewards.view(-1, self.num_generations).std(dim=1)
+            advantages = rewards - mean_grouped_rewards
+            if self.scale_rewards:
+                advantages = advantages / (std_grouped_rewards + 1e-4)
+
+            # Slice to keep only the local part of the data
+            process_slice = slice(
+                self.accelerator.process_index * len(prompts),
+                (self.accelerator.process_index + 1) * len(prompts),
+            )
+            advantages = advantages[process_slice]
+
+        return {
+            "prompt_ids": prompt_ids,
+            "prompt_mask": prompt_mask,
+            "completion_ids": completion_ids,
+            "completion_mask": completion_mask,
+            "advantages": advantages,
+            "old_per_token_logps": old_per_token_logps,
+        }
+
     def compute_liger_loss(self, model, inputs):
         # Compute the per-token log probabilities for the model
         prompt_ids, prompt_mask = inputs["prompt_ids"], inputs["prompt_mask"]
@@ -1173,7 +1284,7 @@ class GRPOTrainer(Trainer):
         attention_mask = torch.cat([prompt_mask, completion_mask], dim=1)
         logits_to_keep = completion_ids.size(1)  # we only need to compute the logits for the completion tokens
 
-        per_token_logps = self._get_per_token_logps(model, input_ids, attention_mask, logits_to_keep)
+        per_token_logps = self._get_per_token_logps(model, input_ids, attention_mask, logits_to_keep) # shape (batch_size, logits_to_keep)
 
         # Compute the KL divergence between the model and the reference model
         if self.beta != 0.0:
