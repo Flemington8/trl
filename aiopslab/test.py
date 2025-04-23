@@ -1,11 +1,17 @@
+import sys
+import os
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
+
 from transformers import AutoTokenizer
-from trl import apply_chat_template
+from trl.data_utils import apply_chat_template
 
 
 tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen2.5-Coder-0.5B-Instruct")
 
-# 2. Flatten conversation
-conversation = [
+# 2. Flatten conversation example (`dict[str, list[dict[str, str]]`):
+conversation = {
+    "messages":[
     {
         "role": "assistant",
         "content": "```\nexec_shell(\"kubectl get pods -n tidb-cluster -o wide\")\n```"
@@ -63,9 +69,8 @@ conversation = [
         "content": "1"
     }
 ]
+}
+result_messages = apply_chat_template(conversation, tokenizer)
 
-result_prompt_completion = apply_chat_template(conversation, tokenizer)
-
-print("\n=== RLHF Format (prompt-completion) ===")
-print(f"Prompt: {result_prompt_completion['prompt']}")
-print(f"Completion: {result_prompt_completion['completion']}")
+print("\n=== Result ===")
+print(result_messages)
