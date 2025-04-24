@@ -136,7 +136,6 @@ class RepeatSampler(Sampler):
         repeat_count: int = 1,
         shuffle: bool = True,
         seed: Optional[int] = None,
-        is_conversation: bool = False,
     ):
         self.data_source = data_source
         self.mini_repeat_count = mini_repeat_count
@@ -145,7 +144,6 @@ class RepeatSampler(Sampler):
         self.num_samples = len(data_source)
         self.shuffle = shuffle
         self.seed = seed
-        self.is_conversation = is_conversation
 
         if shuffle:
             self.generator = torch.Generator()  # Create a local random generator
@@ -371,6 +369,7 @@ class GRPOTrainer(Trainer):
         callbacks: Optional[list[TrainerCallback]] = None,
         optimizers: tuple[Optional[torch.optim.Optimizer], Optional[torch.optim.lr_scheduler.LambdaLR]] = (None, None),
         peft_config: Optional["PeftConfig"] = None,
+        is_conversation: bool = False,
     ):
         # Args
         if args is None:
@@ -484,6 +483,8 @@ class GRPOTrainer(Trainer):
                 reward_func.config.pad_token_id = reward_processing_class.pad_token_id
                 reward_processing_classes[i] = reward_processing_class
         self.reward_processing_classes = reward_processing_classes
+
+        self.is_conversation = is_conversation
 
         # Data collator
         def data_collator(features):  # No data collation is needed in GRPO
