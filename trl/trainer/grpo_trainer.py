@@ -136,6 +136,7 @@ class RepeatSampler(Sampler):
         repeat_count: int = 1,
         shuffle: bool = True,
         seed: Optional[int] = None,
+        is_conversation: bool = False,
     ):
         self.data_source = data_source
         self.mini_repeat_count = mini_repeat_count
@@ -144,6 +145,7 @@ class RepeatSampler(Sampler):
         self.num_samples = len(data_source)
         self.shuffle = shuffle
         self.seed = seed
+        self.is_conversation = is_conversation
 
         if shuffle:
             self.generator = torch.Generator()  # Create a local random generator
@@ -926,19 +928,38 @@ class GRPOTrainer(Trainer):
         # Returns a single local batch in both cases.
 
         mode = "eval" if self.control.should_evaluate else "train"
-        if mode == "train":
-            generate_every = self.args.gradient_accumulation_steps * self.num_iterations
-            if self._step % generate_every == 0 or self._buffered_inputs is None:
-                # self._buffered_inputs=None can occur when resuming from a checkpoint
-                accumulated_local_batch = self._generate_and_score_completions(accumulated_local_batch)
-                self._buffered_inputs = split_tensor_dict(
+        if not self.is_conversation:
+            if mode == "train":
+                generate_every = self.args.gradient_accumulation_steps * self.num_iterations
+                if self._step % generate_every == 0 or self._buffered_inputs is None:
+                    # self._buffered_inputs=None can occur when resuming from a checkpoint
+                    accumulated_local_batch = self._generate_and_score_completions(accumulated_local_batch)
+                    self._buffered_inputs = split_tensor_dict(
+                        accumulated_local_batch, self.args.gradient_accumulation_steps
+                    )
+                inputs = self._buffered_inputs[self._step % self.args.gradient_accumulation_steps]
+                self._step += 1
+            else:
+                # In evaluation, there is neither gradient accumulation, nor multiple iterations
+                inputs = self._generate_and_score_completions(accumulated_local_batch)
+        else:
+            if mode == "train":
+                generate_every = self.args.gradient_accumulation_steps * self.num_iterations
+                if self._step % generate_every == 0 or self._buffered_inputs is None:
+                    # self._buffered_inputs=None can occur when resuming from a checkpoint
+                    accumulated_local_batch = self._process_and_score_conversations(
+                        accumulated_local_batch, self.args.gradient_accumulation_steps
+                    )
+                    self._buffered_inputs = split_tensor_dict(
+                        accumulated_local_batch, self.args.gradient_accumulation_steps
+                    )
+                inputs = self._buffered_inputs[self._step % self.args.gradient_accumulation_steps]
+                self._step += 1
+            else:
+                # In evaluation, there is neither gradient accumulation, nor multiple iterations
+                inputs = self._process_and_score_conversations(
                     accumulated_local_batch, self.args.gradient_accumulation_steps
                 )
-            inputs = self._buffered_inputs[self._step % self.args.gradient_accumulation_steps]
-            self._step += 1
-        else:
-            # In evaluation, there is neither gradient accumulation, nor multiple iterations
-            inputs = self._generate_and_score_completions(accumulated_local_batch)
         return inputs
 
     def _generate_and_score_completions(
@@ -1201,8 +1222,8 @@ class GRPOTrainer(Trainer):
         device = self.accelerator.device
         mode = "eval" if self.control.should_evaluate else "train"
 
-        # Generate conversations using outer API
-        conversations = self._generate_conversations(prompts, pid)
+        # Generate conversations using outer API, we will complete this function in the feature, prompts, pid
+        conversations = self._generate_conversations()
 
         for i, conversation in enumerate(conversations):
             completion_ids = conversation["completion_ids"]
