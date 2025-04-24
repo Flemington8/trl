@@ -1,4 +1,5 @@
 import re
+from typing import Callable, Dict, Optional
 
 completions = [
     [{"role": "assistant", "content": "```\nexec_shell(\"kubectl get pods -n test-social-network | grep compost-post-service\")\n```"}], # Correct format
@@ -47,7 +48,7 @@ results = [
     }
 ]
 
-def format_reward_func(completions, **kwargs):
+def format_reward(completions, **kwargs):
     """Reward function that checks if the completion has the correct API call format."""
     # Check if reasoning model parameter is passed
     is_reasoning = kwargs.get("is_reasoning", False)
@@ -154,9 +155,17 @@ def result_reward_func(results, **kwargs):
 
     return rewards
 
+def get_reward_funcs(script_args) -> list[Callable]:
+    REWARD_FUNCS_REGISTRY = {
+        "format": format_reward,
+    }
+    reward_funcs = [REWARD_FUNCS_REGISTRY[func] for func in script_args.reward_funcs]
+
+    return reward_funcs
+
 if __name__ == "__main__":
     # Example usage
-    rewards = format_reward_func(completions)
+    rewards = format_reward(completions)
     print(rewards)  # Output: [0.0, -1.0, -1.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0]
 
     # Example usage of result_reward_func
