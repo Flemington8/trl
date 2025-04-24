@@ -948,9 +948,7 @@ class GRPOTrainer(Trainer):
                 generate_every = self.args.gradient_accumulation_steps * self.num_iterations
                 if self._step % generate_every == 0 or self._buffered_inputs is None:
                     # self._buffered_inputs=None can occur when resuming from a checkpoint
-                    accumulated_local_batch = self._process_and_score_conversations(
-                        accumulated_local_batch, self.args.gradient_accumulation_steps
-                    )
+                    accumulated_local_batch = self._process_and_score_conversations(accumulated_local_batch)
                     self._buffered_inputs = split_tensor_dict(
                         accumulated_local_batch, self.args.gradient_accumulation_steps
                     )
@@ -958,9 +956,7 @@ class GRPOTrainer(Trainer):
                 self._step += 1
             else:
                 # In evaluation, there is neither gradient accumulation, nor multiple iterations
-                inputs = self._process_and_score_conversations(
-                    accumulated_local_batch, self.args.gradient_accumulation_steps
-                )
+                inputs = self._process_and_score_conversations(accumulated_local_batch)
         return inputs
 
     def _generate_and_score_completions(
