@@ -948,7 +948,7 @@ class GRPOTrainer(Trainer):
         mode = "eval" if self.control.should_evaluate else "train"
 
         prompts = [x["prompt"] for x in inputs]
-        prompts_text = [maybe_apply_chat_template(example, self.processing_class)["prompt"] for example in inputs]
+        prompts_text = [maybe_apply_chat_template(example, self.processing_class)["prompt"] for example in inputs] # list[str]
         prompt_inputs = self.processing_class(
             text=prompts_text, return_tensors="pt", padding=True, padding_side="left", add_special_tokens=False
         )
@@ -1339,7 +1339,7 @@ class GRPOTrainer(Trainer):
             input_ids = inputs["conversation_ids"]
             completion_mask = input["completion_mask"] # shape (B, total_completion_length)
             attention_mask = input["attention_mask"] # shape (B, L)
-            logits_to_keep_mask = input["logits_to_keep_mask"] # the part of completions in a multi-turn conversation, shape (B, L)
+            logits_to_keep_mask = input["logits_to_keep_mask"] # the positions of completions in a multi-turn conversation, shape (B, L)
 
             per_token_logps = self._get_per_token_logps(model, input_ids, attention_mask, logits_to_keep_mask) # shape (batch_size, length_of_logits_to_keep), and the length is the same as completion_mask
 

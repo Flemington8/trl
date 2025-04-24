@@ -4,20 +4,16 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 
 
 from transformers import AutoTokenizer
-from trl.data_utils import apply_chat_template
+from trl.data_utils import maybe_apply_chat_template
 
 
 tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen2.5-Coder-0.5B-Instruct")
 
-# 2. Flatten conversation example (`dict[str, list[dict[str, str]]`):
-conversation = {
+# 2. Flatten conversation
+conversations = {
     "messages":[
     {
-        "role": "assistant",
-        "content": "```\nexec_shell(\"kubectl get pods -n tidb-cluster -o wide\")\n```"
-    },
-    {
-        "role": "env",
+        "role": "user",
         "content": "No resources found in tidb-cluster namespace.\n"
     },
     {
@@ -25,7 +21,7 @@ conversation = {
         "content": "```\nexec_shell(\"kubectl get namespaces | grep tidb-cluster\")\n```"
     },
     {
-        "role": "env",
+        "role": "user",
         "content": "tidb-cluster             Active   20h\n"
     },
     {
@@ -33,7 +29,7 @@ conversation = {
         "content": "```\nkubectl get all -n tidb-cluster\n```"
     },
     {
-        "role": "env",
+        "role": "user",
         "content": "Error parsing response: No API call found!"
     },
     {
@@ -41,7 +37,7 @@ conversation = {
         "content": "```\nexec_shell(\"kubectl get statefulsets -n tidb-cluster\")\n```"
     },
     {
-        "role": "env",
+        "role": "user",
         "content": "No resources found in tidb-cluster namespace.\n"
     },
     {
@@ -49,7 +45,7 @@ conversation = {
         "content": "```\nexec_shell(\"kubectl get tidbclusters -n tidb-cluster\")\n```"
     },
     {
-        "role": "env",
+        "role": "user",
         "content": "error: the server doesn't have a resource type \"tidbclusters\"\n"
     },
     {
@@ -57,7 +53,7 @@ conversation = {
         "content": "```\nexec_shell(\"kubectl get crd | grep tidb\")\n```"
     },
     {
-        "role": "env",
+        "role": "user",
         "content": ""
     },
     {
@@ -65,12 +61,14 @@ conversation = {
         "content": "```\nsubmit(\"Yes\")\n```"
     },
     {
-        "role": "env",
+        "role": "user",
         "content": "1"
     }
 ]
 }
-result_messages = apply_chat_template(conversation, tokenizer)
+conversations_text = maybe_apply_chat_template(conversations, tokenizer)
 
 print("\n=== Result ===")
-print(result_messages)
+print(conversations_text)
+# === Result ===
+# {'text': '<|im_start|>system\nYou are Qwen, created by Alibaba Cloud. You are a helpful assistant.<|im_end|>\n<|im_start|>user\nNo resources found in tidb-cluster namespace.\n<|im_end|>\n<|im_start|>assistant\n```\nexec_shell("kubectl get pods -n tidb-cluster -o wide")\n```<|im_end|>\n<|im_start|>user\nNo resources found in tidb-cluster namespace.\n<|im_end|>\n<|im_start|>assistant\n```\nexec_shell("kubectl get namespaces | grep tidb-cluster")\n```<|im_end|>\n<|im_start|>user\ntidb-cluster             Active   20h\n<|im_end|>\n<|im_start|>assistant\n```\nkubectl get all -n tidb-cluster\n```<|im_end|>\n<|im_start|>user\nError parsing response: No API call found!<|im_end|>\n<|im_start|>assistant\n```\nexec_shell("kubectl get statefulsets -n tidb-cluster")\n```<|im_end|>\n<|im_start|>user\nNo resources found in tidb-cluster namespace.\n<|im_end|>\n<|im_start|>assistant\n```\nexec_shell("kubectl get tidbclusters -n tidb-cluster")\n```<|im_end|>\n<|im_start|>user\nerror: the server doesn\'t have a resource type "tidbclusters"\n<|im_end|>\n<|im_start|>assistant\n```\nexec_shell("kubectl get crd | grep tidb")\n```<|im_end|>\n<|im_start|>user\n<|im_end|>\n<|im_start|>assistant\n```\nsubmit("Yes")\n```<|im_end|>\n<|im_start|>user\n1<|im_end|>\n'}
