@@ -1,5 +1,6 @@
 from datasets import Dataset
 from trl.trainer import GRPOTrainer
+from trl.trainer import GRPOConfig
 from aiopslab.rewards import format_reward
 
 conversation_0 = {
@@ -57,11 +58,18 @@ conversations = [conversation_0, conversation_1]
 # Define a dataset that contains both math and coding problems
 dataset = Dataset.from_list(conversations)
 
+args = GRPOConfig(
+    output_dir="./output",
+    report_to=[]  # Empty list means no logging services
+)
+
 # Use both task-specific reward functions
 trainer = GRPOTrainer(
-    model="Qwen/Qwen2-0.5B-Instruct",
+    model="Qwen/Qwen2.5-Coder-0.5B-Instruct",
     reward_funcs=format_reward,
     train_dataset=dataset,
+    args=args,
+    is_conversation=True,
 )
 
 trainer.train()
