@@ -37,23 +37,11 @@ conversation_0 = {
         "role": "assistant",
         "content": "```\nsubmit(\"Yes\")\n```"
     },
-    {
-        "role": "user",
-        "content": "1"
-    }
 ]
 }
 
 conversation_1 = {
     "messages":[
-    {
-        "role": "user",
-        "content": "No resources found in tidb-cluster namespace.\n"
-    },
-    {
-        "role": "assistant",
-        "content": "```\nexec_shell(\"kubectl get namespaces | grep tidb-cluster\")\n```"
-    },
     {
         "role": "user",
         "content": "tidb-cluster             Active   20h\n"
@@ -64,7 +52,11 @@ conversation_1 = {
     },
     {
         "role": "user",
-        "content": ""
+        "content": "No resources found in tidb-cluster namespace.\n"
+    },
+    {
+        "role": "assistant",
+        "content": "1"
     },
 ]
 }
