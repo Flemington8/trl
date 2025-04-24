@@ -72,7 +72,7 @@ conversation_1 = {
 conversations = [conversation_0, conversation_1]  # Wrap in a list to simulate multiple conversations
 
 # Function to separate prompts and completions in multi-turn conversations
-def prepare_aligned_multi_turn_masks(conversations_list, tokenizer, device="cpu"):
+def prepare_aligned_multi_turn_masks(conversations, tokenizer, device="cpu"):
     """
     Generate masks for batched multi-turn conversations with position alignment.
     
@@ -81,11 +81,11 @@ def prepare_aligned_multi_turn_masks(conversations_list, tokenizer, device="cpu"
     - Conversations with fewer turns have proper masking for missing turns
     - logits_to_keep_mask correctly identifies only valid completion tokens
     """
-    batch_size = len(conversations_list)
+    batch_size = len(conversations)
     
     # Step 1: Find the maximum number of turns across all conversations
     max_turns = max(len([m for m in conv["messages"] if m["role"] == "assistant"]) 
-                   for conv in conversations_list)
+                   for conv in conversations)
     
     # Step 2: Process each conversation, separating by turns
     all_prompt_texts_by_turn = [[] for _ in range(max_turns)]
@@ -94,36 +94,30 @@ def prepare_aligned_multi_turn_masks(conversations_list, tokenizer, device="cpu"
     # Track which conversations have which turns
     turn_presence = torch.zeros((batch_size, max_turns), dtype=torch.bool, device=device)
     
-    for conv_idx, conversation in enumerate(conversations_list):
+    for conv_idx, conversation in enumerate(conversations):
         messages = conversation["messages"]
-        user_messages = [msg for msg in messages if msg["role"] == "user"]
+        user_messages = [msg for msg in messages if msg["role"] == "user" or msg["role"] == "system"]
         assistant_messages = [msg for msg in messages if msg["role"] == "assistant"]
         
         for turn_idx in range(min(len(assistant_messages), max_turns)):
             # Mark this turn as present
             turn_presence[conv_idx, turn_idx] = True
             
-            # Get the history up to this turn
-            if turn_idx == 0:
-                # First turn - just the first user message
-                history = [messages[0]]
-            else:
-                # Later turns - previous turns plus current user message
-                history_idx = 2 * turn_idx
-                history = messages[:history_idx+1]
-                
+            # Current prompt for this turn
+            prompt = [user_messages[turn_idx]] # list[dict[str, str]]
+
             # Current completion for this turn
             completion = [assistant_messages[turn_idx]]
             
             # Apply chat template
-            prompt_dict = {"messages": history}
+            prompt_dict = {"messages": [prompt[0]]}
             completion_dict = {"messages": [completion[0]]}
             
             prompt_text = maybe_apply_chat_template(prompt_dict, tokenizer)["text"]
             completion_text = maybe_apply_chat_template(completion_dict, tokenizer)["text"]
             
             # Add to the appropriate turn lists
-            all_prompt_texts_by_turn[turn_idx].append(prompt_text)
+            all_prompt_texts_by_turn[turn_idx].append(prompt_text) # all_prompt_texts_by_turn[turn_idx] -> list[str]
             all_completion_texts_by_turn[turn_idx].append(completion_text)
         
         # For remaining turns that this conversation doesn't have, add empty placeholders
@@ -177,8 +171,7 @@ def prepare_aligned_multi_turn_masks(conversations_list, tokenizer, device="cpu"
     completion_mask = torch.zeros((batch_size, total_length), dtype=torch.bool, device=device)
     
     # Track positions for each turn
-    prompt_start_pos = 0
-    completion_start_pos = total_prompt_length
+    current_pos = 0
     
     # Fill tensors for each turn
     for turn_idx in range(max_turns):
@@ -186,32 +179,32 @@ def prepare_aligned_multi_turn_masks(conversations_list, tokenizer, device="cpu"
         c_length = turn_completion_lengths[turn_idx]
         
         # Fill prompt section
-        prompt_end_pos = prompt_start_pos + p_length
-        full_ids[:, prompt_start_pos:prompt_end_pos] = prompt_ids_by_turn[turn_idx]
-        full_mask[:, prompt_start_pos:prompt_end_pos] = prompt_mask_by_turn[turn_idx]
+        prompt_end_pos = current_pos + p_length
+        full_ids[:, current_pos:prompt_end_pos] = prompt_ids_by_turn[turn_idx]
+        full_mask[:, current_pos:prompt_end_pos] = prompt_mask_by_turn[turn_idx]
         
         # Set prompt mask for valid turns only
         for b in range(batch_size):
             if turn_presence[b, turn_idx]:
-                prompt_mask[b, prompt_start_pos:prompt_end_pos] = prompt_mask_by_turn[turn_idx][b].bool()
+                prompt_mask[b, current_pos:prompt_end_pos] = prompt_mask_by_turn[turn_idx][b].bool()
         
-        prompt_start_pos = prompt_end_pos
+        current_pos = prompt_end_pos
         
         # Fill completion section
-        completion_end_pos = completion_start_pos + c_length
-        full_ids[:, completion_start_pos:completion_end_pos] = completion_ids_by_turn[turn_idx]
-        full_mask[:, completion_start_pos:completion_end_pos] = completion_mask_by_turn[turn_idx]
+        completion_end_pos = current_pos + c_length
+        full_ids[:, current_pos:completion_end_pos] = completion_ids_by_turn[turn_idx]
+        full_mask[:, current_pos:completion_end_pos] = completion_mask_by_turn[turn_idx]
         
         # Set completion mask for valid turns only
         for b in range(batch_size):
             if turn_presence[b, turn_idx]:
-                completion_mask[b, completion_start_pos:completion_end_pos] = completion_mask_by_turn[turn_idx][b].bool()
+                completion_mask[b, current_pos:completion_end_pos] = completion_mask_by_turn[turn_idx][b].bool()
         
-        completion_start_pos = completion_end_pos
+        current_pos = completion_end_pos
     
     # Step 6: Create the 1D logits_to_keep_mask (flattened version of completion_mask)
     # This identifies which positions should contribute to the loss calculation
-    logits_to_keep_mask = completion_mask.flatten()
+    logits_to_keep_mask = torch.any(completion_mask, dim=0) # shape: (total_length,)
     
     return {
         "input_ids": full_ids,
