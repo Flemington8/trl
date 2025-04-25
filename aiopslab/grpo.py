@@ -60,6 +60,7 @@ dataset = Dataset.from_list(conversations)
 
 args = GRPOConfig(
     output_dir="./output",
+    beta=0.0,
     report_to=[]  # Empty list means no logging services
 )
 

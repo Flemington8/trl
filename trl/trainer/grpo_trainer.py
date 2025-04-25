@@ -830,7 +830,7 @@ class GRPOTrainer(Trainer):
         batch_size = batch_size or input_ids.size(0)  # Chunk inputs into smaller batches to reduce memory peak
         all_logps = []
 
-        if isinstance(logits_to_keep, int):
+        if not self.is_conversation:
             for i in range(0, input_ids.size(0), batch_size):
                 input_ids_batch = input_ids[i : i + batch_size]
                 attention_mask_batch = attention_mask[i : i + batch_size]
@@ -1208,42 +1208,182 @@ class GRPOTrainer(Trainer):
             "ref_per_token_logps": ref_per_token_logps,
         }
 
-    def _generate_conversations(
-        self, inputs: list[dict[str, Union[torch.Tensor, Any]]]
+    def _prepare_aligned_multi_turn_masks(
+        self, inputs: dict[str, Union[torch.Tensor, Any]]
     ) -> dict[str, Union[torch.Tensor, Any]]:
-        pass
+        """
+        Generate masks for batched multi-turn conversations with position alignment.
+        
+        Handles conversations with different numbers of turns, ensuring that:
+        - Masks for the nth prompt/completion align positionally across conversations
+        - Conversations with fewer turns have proper masking for missing turns
+        - logits_to_keep_mask correctly identifies only valid completion tokens
+        """
+        batch_size = len(inputs)
+        device = self.accelerator.device
+        
+        # Step 1: Find the maximum number of turns across all conversations
+        max_turns = max(len([m for m in conv["messages"] if m["role"] == "assistant"]) 
+                    for conv in inputs)
+        
+        # Step 2: Process each conversation, separating by turns
+        all_prompt_texts_by_turn = [[] for _ in range(max_turns)]
+        all_completion_texts_by_turn = [[] for _ in range(max_turns)]
+        
+        # Track which conversations have which turns
+        turn_presence = torch.zeros((batch_size, max_turns), dtype=torch.bool, device=device)
+        
+        for conv_idx, conversation in enumerate(inputs):
+            messages = conversation["messages"]
+            user_messages = [msg for msg in messages if msg["role"] == "user" or msg["role"] == "system"]
+            assistant_messages = [msg for msg in messages if msg["role"] == "assistant"]
+            
+            for turn_idx in range(min(len(assistant_messages), max_turns)):
+                # Mark this turn as present
+                turn_presence[conv_idx, turn_idx] = True
+                
+                # Current prompt for this turn
+                prompt = [user_messages[turn_idx]] # list[dict[str, str]]
 
-    def _process_and_score_conversations(
+                # Current completion for this turn
+                completion = [assistant_messages[turn_idx]]
+                
+                # Apply chat template
+                prompt_dict = {"messages": [prompt[0]]}
+                completion_dict = {"messages": [completion[0]]}
+                
+                prompt_text = maybe_apply_chat_template(prompt_dict, self.processing_class)["text"]
+                completion_text = maybe_apply_chat_template(completion_dict, self.processing_class)["text"]
+                
+                # Add to the appropriate turn lists
+                all_prompt_texts_by_turn[turn_idx].append(prompt_text) # all_prompt_texts_by_turn[turn_idx] -> list[str]
+                all_completion_texts_by_turn[turn_idx].append(completion_text)
+            
+            # For remaining turns that this conversation doesn't have, add empty placeholders
+            for turn_idx in range(len(assistant_messages), max_turns):
+                # Add empty strings as placeholders
+                all_prompt_texts_by_turn[turn_idx].append("")
+                all_completion_texts_by_turn[turn_idx].append("")
+        
+        # Step 3: Process each turn separately and collect tensors
+        prompt_ids_by_turn = []
+        prompt_mask_by_turn = []
+        completion_ids_by_turn = []
+        completion_mask_by_turn = []
+        
+        for turn_idx in range(max_turns):
+            # Tokenize all prompts and completions for this turn
+            prompt_inputs = self.processing_class(
+                all_prompt_texts_by_turn[turn_idx],
+                return_tensors="pt",
+                padding=True,
+                padding_side="left",
+                add_special_tokens=True,
+            )
+            
+            completion_inputs = self.processing_class(
+                all_completion_texts_by_turn[turn_idx],
+                return_tensors="pt", 
+                padding=True,
+                padding_side="right",
+                add_special_tokens=True,
+            )
+            
+            # Store the IDs and masks
+            prompt_ids_by_turn.append(prompt_inputs["input_ids"])
+            prompt_mask_by_turn.append(prompt_inputs["attention_mask"])
+            completion_ids_by_turn.append(completion_inputs["input_ids"])
+            completion_mask_by_turn.append(completion_inputs["attention_mask"])
+        
+        # Step 4: Determine the sizes for full tensors
+        turn_prompt_lengths = [ids.size(1) for ids in prompt_ids_by_turn]
+        turn_completion_lengths = [ids.size(1) for ids in completion_ids_by_turn]
+        
+        total_prompt_length = sum(turn_prompt_lengths)
+        total_completion_length = sum(turn_completion_lengths)
+        total_length = total_prompt_length + total_completion_length
+        
+        # Step 5: Create full tensors with proper alignment
+        conversation_ids = torch.zeros((batch_size, total_length), dtype=torch.long, device=device)
+        attention_mask = torch.zeros((batch_size, total_length), dtype=torch.long, device=device)
+        prompt_mask = torch.zeros((batch_size, total_length), dtype=torch.bool, device=device)
+        completion_mask = torch.zeros((batch_size, total_length), dtype=torch.bool, device=device)
+        
+        # Track positions for each turn
+        current_pos = 0
+        
+        # Fill tensors for each turn
+        for turn_idx in range(max_turns):
+            p_length = turn_prompt_lengths[turn_idx]
+            c_length = turn_completion_lengths[turn_idx]
+            
+            # Fill prompt section
+            prompt_end_pos = current_pos + p_length
+            conversation_ids[:, current_pos:prompt_end_pos] = prompt_ids_by_turn[turn_idx]
+            attention_mask[:, current_pos:prompt_end_pos] = prompt_mask_by_turn[turn_idx]
+            
+            # Set prompt mask for valid turns only
+            for b in range(batch_size):
+                if turn_presence[b, turn_idx]:
+                    prompt_mask[b, current_pos:prompt_end_pos] = prompt_mask_by_turn[turn_idx][b].bool()
+            
+            current_pos = prompt_end_pos
+            
+            # Fill completion section
+            completion_end_pos = current_pos + c_length
+            conversation_ids[:, current_pos:completion_end_pos] = completion_ids_by_turn[turn_idx]
+            attention_mask[:, current_pos:completion_end_pos] = completion_mask_by_turn[turn_idx]
+            
+            # Set completion mask for valid turns only
+            for b in range(batch_size):
+                if turn_presence[b, turn_idx]:
+                    completion_mask[b, current_pos:completion_end_pos] = completion_mask_by_turn[turn_idx][b].bool()
+            
+            current_pos = completion_end_pos
+        
+        # Step 6: Create the 1D logits_to_keep_mask (flattened version of completion_mask)
+        # This identifies which positions should contribute to the loss calculation
+        logits_to_keep_mask = torch.any(completion_mask, dim=0) # shape: (total_length,)
+        
+        return {
+            "conversation_ids": conversation_ids,
+            "attention_mask": attention_mask,
+            "prompt_mask": prompt_mask,
+            "completion_mask": completion_mask,
+            "logits_to_keep_mask": logits_to_keep_mask,
+        }
+
+    def _generate_and_score_conversations(
         self, inputs: dict[str, Union[torch.Tensor, Any]]
     ) -> dict[str, Union[torch.Tensor, Any]]:
         device = self.accelerator.device
         mode = "eval" if self.control.should_evaluate else "train"
 
         # Generate conversations using outer API, we will complete this function in the feature, prompts, pid
-        conversations = self._generate_conversations()
+        # conversations = self._aiopslab_api()
 
-        for i, conversation in enumerate(conversations):
-            completion_ids = conversation["completion_ids"]
-            # Mask everything after the first EOS token
-            is_eos = completion_ids == self.processing_class.eos_token_id
-            eos_idx = torch.full((is_eos.size(0),), is_eos.size(1), dtype=torch.long, device=device)
-            eos_idx[is_eos.any(dim=1)] = is_eos.int().argmax(dim=1)[is_eos.any(dim=1)]
-            sequence_indices = torch.arange(is_eos.size(1), device=device).expand(is_eos.size(0), -1)
-            completion_mask = (sequence_indices <= eos_idx.unsqueeze(1)).int()
+        # Process the conversations to get the prompt and completion IDs
+        conversation_ids, attention_mask, prompt_mask, completion_mask, logits_to_keep_mask = self._prepare_aligned_multi_turn_masks(inputs)
 
-        # Concatenate prompt_mask with completion_mask for logit computation
-        attention_mask = torch.cat([prompt_mask, completion_mask], dim=1)
-
-        logits_to_keep = completions_ids.size(1)  # we only need to compute the logits for the completions tokens
-        batch_size = self.args.per_device_train_batch_size if mode == "train" else self.args.per_device_eval_batch_size
+        with torch.no_grad():
+            # When using num_iterations == 1, old_per_token_logps == per_token_logps, so we can skip it's
+            # computation here, and use per_token_logps.detach() instead.
+            if self.num_iterations > 1:
+                old_per_token_logps = self._get_per_token_logps(
+                    self.model, prompt_completion_ids, attention_mask, logits_to_keep, batch_size
+                ) # shape (batch_size, logits_to_keep)
+            else:
+                old_per_token_logps = None
 
         return {
-            "prompt_ids": prompt_ids,
+            "conversation_ids": conversation_ids,
+            "attention_mask": attention_mask,
             "prompt_mask": prompt_mask,
-            "completion_ids": completion_ids,
             "completion_mask": completion_mask,
-            "advantages": advantages, # multi-turn conversation level
+            "logits_to_keep_mask": logits_to_keep_mask,
+            "advantages": advantages,
             "old_per_token_logps": old_per_token_logps,
+            "ref_per_token_logps": None,
         }
 
     def compute_liger_loss(self, model, inputs):
