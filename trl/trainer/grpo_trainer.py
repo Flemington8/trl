@@ -1352,8 +1352,10 @@ class GRPOTrainer(Trainer):
     def _generate_and_score_conversations(
         self, inputs: dict[str, Union[torch.Tensor, Any]]
     ) -> dict[str, Union[torch.Tensor, Any]]:
+
         device = self.accelerator.device
         mode = "eval" if self.control.should_evaluate else "train"
+        batch_size = self.args.per_device_train_batch_size if mode == "train" else self.args.per_device_eval_batch_size
 
         # Generate conversations using outer API, we will complete this function in the feature, prompts, pid
         # conversations = self._aiopslab_api()
@@ -1366,10 +1368,34 @@ class GRPOTrainer(Trainer):
             # computation here, and use per_token_logps.detach() instead.
             if self.num_iterations > 1:
                 old_per_token_logps = self._get_per_token_logps(
-                    self.model, prompt_completion_ids, attention_mask, logits_to_keep, batch_size
+                    self.model, conversation_ids, attention_mask, logits_to_keep_mask, batch_size
                 ) # shape (batch_size, logits_to_keep)
             else:
                 old_per_token_logps = None
+
+        def generate_test_advantages(batch_size=4, device="cuda"):
+            """
+            Generate test advantages with appropriate shape for GRPO trainer
+            
+            Args:
+                batch_size: Number of examples in batch
+                device: Device to place tensor on
+                
+            Returns:
+                Tensor of shape (batch_size,) with random advantage values
+            """
+            # Use normal distribution centered at 0 with std 1
+            # This creates both positive and negative advantages
+            advantages = torch.randn(batch_size, device=device)
+            
+            # Optional: scale to reasonable range (-2 to 2)
+            advantages = advantages * 1.0
+            
+            return advantages
+        
+        batch_size = conversation_ids.size(0)
+        
+        test_advantages = generate_test_advantages(batch_size=batch_size, device=device)
 
         return {
             "conversation_ids": conversation_ids,
@@ -1377,7 +1403,7 @@ class GRPOTrainer(Trainer):
             "prompt_mask": prompt_mask,
             "completion_mask": completion_mask,
             "logits_to_keep_mask": logits_to_keep_mask,
-            "advantages": advantages,
+            "advantages": test_advantages,
             "old_per_token_logps": old_per_token_logps,
             "ref_per_token_logps": None,
         }
