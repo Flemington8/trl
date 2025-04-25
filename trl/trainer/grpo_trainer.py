@@ -825,9 +825,12 @@ class GRPOTrainer(Trainer):
                 - L is the length of the input sequence (prompt + completion).
             attention_mask (`torch.Tensor`): The attention mask, shape (B, L).
                 - 1 for tokens to attend to, 0 for padding tokens.
-            logits_to_keep (int or torch.Tensor, optional) 
-                - If an int, compute logits for the last logits_to_keep tokens. 
+            logits_to_keep (int or torch.Tensor, optional):
+                - If an int, compute logits for the last logits_to_keep tokens.
+                - If 0, calculate logits for all input_ids (special case). 
+                Only last token logits are needed for generation, and calculating them only for that token can save memory, which becomes pretty significant for long sequences or large vocabulary size. 
                 - If a torch.Tensor, must be 1D corresponding to the indices to keep in the sequence length dimension.
+                This is useful when using packed tensor format (single dimension for batch and sequence length).
             batch_size (`int`, *optional*): Batch size for processing. If `None`, uses input_ids.size(0).
 
         Returns:
@@ -1361,7 +1364,7 @@ class GRPOTrainer(Trainer):
         attention_mask = masks["attention_mask"]
         prompt_mask = masks["prompt_mask"]
         completion_mask = masks["completion_mask"]
-        logits_to_keep_mask = torch.any(completion_mask, dim=0)
+        logits_to_keep_mask = torch.any(completion_mask, dim=0) # shape (1, total_length)
 
         with torch.no_grad():
             # When using num_iterations == 1, old_per_token_logps == per_token_logps, so we can skip it's
@@ -1518,7 +1521,7 @@ class GRPOTrainer(Trainer):
             input_ids = inputs["conversation_ids"]
             completion_mask = inputs["completion_mask"] # shape (B, total_completion_length)
             attention_mask = inputs["attention_mask"] # shape (B, L)
-            logits_to_keep_mask = torch.any(completion_mask, dim=0) # the positions of completions in a multi-turn conversation, shape (B, L)
+            logits_to_keep_mask = torch.any(completion_mask, dim=0) # the positions of completions in a multi-turn conversation, shape (1, total_completion_length)
 
             per_token_logps = self._get_per_token_logps(model, input_ids, attention_mask, logits_to_keep_mask) # shape (batch_size, length_of_logits_to_keep), and the length is the same as completion_mask
 
