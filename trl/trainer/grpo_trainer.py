@@ -1337,16 +1337,11 @@ class GRPOTrainer(Trainer):
             
             current_pos = completion_end_pos
         
-        # Step 6: Create the 1D logits_to_keep_mask (flattened version of completion_mask)
-        # This identifies which positions should contribute to the loss calculation
-        logits_to_keep_mask = torch.any(completion_mask, dim=0) # shape: (total_length,)
-        
         return {
             "conversation_ids": conversation_ids,
             "attention_mask": attention_mask,
             "prompt_mask": prompt_mask,
             "completion_mask": completion_mask,
-            "logits_to_keep_mask": logits_to_keep_mask,
         }
 
     def _generate_and_score_conversations(
@@ -1366,7 +1361,7 @@ class GRPOTrainer(Trainer):
         attention_mask = masks["attention_mask"]
         prompt_mask = masks["prompt_mask"]
         completion_mask = masks["completion_mask"]
-        logits_to_keep_mask = masks["logits_to_keep_mask"]
+        logits_to_keep_mask = torch.any(completion_mask, dim=0)
 
         with torch.no_grad():
             # When using num_iterations == 1, old_per_token_logps == per_token_logps, so we can skip it's
@@ -1407,7 +1402,6 @@ class GRPOTrainer(Trainer):
             "attention_mask": attention_mask,
             "prompt_mask": prompt_mask,
             "completion_mask": completion_mask,
-            "logits_to_keep_mask": logits_to_keep_mask,
             "advantages": test_advantages,
             "old_per_token_logps": old_per_token_logps,
             "ref_per_token_logps": None,
@@ -1524,7 +1518,7 @@ class GRPOTrainer(Trainer):
             input_ids = inputs["conversation_ids"]
             completion_mask = inputs["completion_mask"] # shape (B, total_completion_length)
             attention_mask = inputs["attention_mask"] # shape (B, L)
-            logits_to_keep_mask = inputs["logits_to_keep_mask"] # the positions of completions in a multi-turn conversation, shape (B, L)
+            logits_to_keep_mask = torch.any(completion_mask, dim=0) # the positions of completions in a multi-turn conversation, shape (B, L)
 
             per_token_logps = self._get_per_token_logps(model, input_ids, attention_mask, logits_to_keep_mask) # shape (batch_size, length_of_logits_to_keep), and the length is the same as completion_mask
 
