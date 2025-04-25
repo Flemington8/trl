@@ -1361,7 +1361,12 @@ class GRPOTrainer(Trainer):
         # conversations = self._aiopslab_api()
 
         # Process the conversations to get the prompt and completion IDs
-        conversation_ids, attention_mask, prompt_mask, completion_mask, logits_to_keep_mask = self._prepare_aligned_multi_turn_masks(inputs)
+        masks = self._prepare_aligned_multi_turn_masks(inputs)
+        conversation_ids = masks["conversation_ids"]
+        attention_mask = masks["attention_mask"]
+        prompt_mask = masks["prompt_mask"]
+        completion_mask = masks["completion_mask"]
+        logits_to_keep_mask = masks["logits_to_keep_mask"]
 
         with torch.no_grad():
             # When using num_iterations == 1, old_per_token_logps == per_token_logps, so we can skip it's
@@ -1451,8 +1456,8 @@ class GRPOTrainer(Trainer):
         else:
             return self._compute_loss(model, inputs)
 
-    def _compute_loss(self, model, inputs, is_conversational=False):
-        if not is_conversational:
+    def _compute_loss(self, model, inputs):
+        if not self.is_conversation:
             # Compute the per-token log probabilities for the model
             prompt_ids, prompt_mask = inputs["prompt_ids"], inputs["prompt_mask"]
             completion_ids, completion_mask = inputs["completion_ids"], inputs["completion_mask"]
@@ -1517,9 +1522,9 @@ class GRPOTrainer(Trainer):
             self._metrics[mode]["clip_ratio/region_mean"].append(gathered_clip_ratio.nanmean().item())
         else:
             input_ids = inputs["conversation_ids"]
-            completion_mask = input["completion_mask"] # shape (B, total_completion_length)
-            attention_mask = input["attention_mask"] # shape (B, L)
-            logits_to_keep_mask = input["logits_to_keep_mask"] # the positions of completions in a multi-turn conversation, shape (B, L)
+            completion_mask = inputs["completion_mask"] # shape (B, total_completion_length)
+            attention_mask = inputs["attention_mask"] # shape (B, L)
+            logits_to_keep_mask = inputs["logits_to_keep_mask"] # the positions of completions in a multi-turn conversation, shape (B, L)
 
             per_token_logps = self._get_per_token_logps(model, input_ids, attention_mask, logits_to_keep_mask) # shape (batch_size, length_of_logits_to_keep), and the length is the same as completion_mask
 
