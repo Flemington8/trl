@@ -865,17 +865,26 @@ class GRPOTrainer(Trainer):
             # logits_to_keep is a BoolTensor
             for i in range(0, input_ids.size(0), batch_size):
                 input_ids_batch = input_ids[i : i + batch_size]
+                # print(f"shape of input_ids_batch: {input_ids_batch.shape}")
                 attention_mask_batch = attention_mask[i : i + batch_size]
-                logits_to_keep_batch = logits_to_keep.unsqueeze(0).expand_as(input_ids_batch)
+                logits_to_keep_batch = logits_to_keep.unsqueeze(0).expand_as(input_ids_batch) # shape: (batch_size, seq_length)
 
+                # Convert boolean mask to indices explicitly before passing to model
+                logits_to_keep_indices = torch.nonzero(logits_to_keep).squeeze(1)
+                
+                # print(f"shape of logits_to_keep: {logits_to_keep.shape}")
+                # print(f"shape of logits_to_keep_indices: {logits_to_keep_indices.shape}")
+
+                # TODO: We add 1 to `logits_to_keep` because the last logits of the sequence is later excluded
                 logits = model(
-                    input_ids=input_ids_batch, attention_mask=attention_mask_batch, logits_to_keep=logits_to_keep
-                ).logits # shape: (batch_size, seq_length, vocab_size)
-                logits = logits[:, :-1, :]  # (B, L-1, V), exclude the last logit: it corresponds to the next token pred
+                    input_ids=input_ids_batch, attention_mask=attention_mask_batch, logits_to_keep=logits_to_keep_indices.tolist()
+                ).logits # shape: (batch_size, length_of_logits_to_keep, vocab_size)
+                # logits = logits[:, :-1, :]  # (B, L-1, V), exclude the last logit: it corresponds to the next token pred
+                # print(f"shape of logits: {logits.shape}")
                 input_ids_batch = input_ids_batch[logits_to_keep_batch].view(batch_size, -1) # shape: (B, length_of_logits_to_keep)
+                # print(f"shape of input_ids_batch: {input_ids_batch.shape}")
                 # For transformers<=4.48, logits_to_keep argument isn't supported, so here we drop logits ourselves.
                 # See https://github.com/huggingface/trl/issues/2770
-                logits = logits[logits_to_keep_batch].reshape(batch_size, -1, logits.size(-1)) # shape: (B, length_of_logits_to_keep, V)
                 # Divide logits by sampling temperature.
                 # See https://huggingface.co/blog/the_n_implementation_details_of_rlhf_with_ppo#policy-training-implementation-details
                 logits = logits / self.temperature
@@ -1548,6 +1557,7 @@ class GRPOTrainer(Trainer):
             if self.loss_type == "grpo":
                 loss = ((per_token_loss * completion_mask).sum(-1) / completion_mask.sum(-1).clamp(min=1.0)).mean()
             elif self.loss_type == "bnpo":
+                completion_mask = completion_mask[:, logits_to_keep_mask] # shape (B, length_of_logits_to_keep)
                 loss = (per_token_loss * completion_mask).sum() / completion_mask.sum().clamp(min=1.0)
             elif self.loss_type == "dr_grpo":
                 loss = (per_token_loss * completion_mask).sum() / (per_token_loss.size(0) * self.max_completion_length)

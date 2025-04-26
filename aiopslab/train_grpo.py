@@ -1,0 +1,45 @@
+from datasets import load_dataset
+from trl.trainer import GRPOConfig, GRPOTrainer
+from peft import LoraConfig
+
+dataset = load_dataset("trl-lib/tldr", split="train")
+
+# Define the reward function, which rewards completions that are close to 20 characters
+def reward_len(completions, **kwargs):
+    return [-abs(20 - len(completion)) for completion in completions]
+
+training_args = GRPOConfig(output_dir="./output/Qwen2.5-Coder-0.5B-Instruct-GRPO",
+                        beta=0.0,
+                        fp16=True,
+                        per_device_train_batch_size=1,
+                        gradient_accumulation_steps=8,
+                        max_prompt_length=128,
+                        max_completion_length=64,
+                        report_to=[])
+
+peft_config = LoraConfig(
+    r=8,
+    lora_alpha=8,
+    lora_dropout=0.05,        # Dropout probability
+    bias="none",              # Don't train bias parameters to save memory
+    task_type="CAUSAL_LM",    # Task type for the model
+    # Target specific attention modules in Qwen2.5 architecture
+    target_modules=[
+        "q_proj", 
+        "k_proj", 
+        "v_proj", 
+        "o_proj"
+    ],
+    # Additional memory-saving options
+    inference_mode=False,     # We're training, not inferencing
+    modules_to_save=[],       # Don't fully save any modules
+)
+
+trainer = GRPOTrainer(
+    model="Qwen/Qwen2.5-Coder-0.5B-Instruct",
+    reward_funcs=reward_len,
+    args=training_args,
+    train_dataset=dataset,
+    peft_config=peft_config
+)
+trainer.train()
