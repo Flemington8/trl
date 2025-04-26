@@ -1,6 +1,82 @@
 import re
 from typing import Callable, Dict, Optional
 
+conversation_0 = {
+    "messages":[
+    {
+        "role": "user",
+        "content": "```\nsubmit(\"Yes\")\n```"
+    },
+    {
+        "role": "assistant",
+        "content": "```\nsubmit(\"Yes\")\n```"
+    },
+    {
+        "role": "user",
+        "content": "tidb-cluster             Active   20h\n"
+    },
+    {
+        "role": "assistant",
+        "content": "```\nexec_shell(\"kubectl get statefulsets -n tidb-cluster\")\n```"
+    },
+    {
+        "role": "user",
+        "content": ""
+    },
+    {
+        "role": "assistant",
+        "content": "```\nsubmit(\"Yes\")\n```"
+    },
+        {
+        "role": "user",
+        "content": "```\nsubmit(\"Yes\")\n```"
+    },
+    {
+        "role": "assistant",
+        "content": "```\nexec_shell(\"kubectl get statefulsets -n tidb-cluster\")\n```"
+    },
+    {
+        "role": "user",
+        "content": "```\nsubmit(\"Yes\")\n```"
+    },
+    {
+        "role": "assistant",
+        "content": "```\nexec_shell(\"kubectl get statefulsets -n tidb-cluster\")\n```"
+    },
+    {
+        "role": "user",
+        "content": "```\nsubmit(\"Yes\")\n```"
+    },
+    {
+        "role": "assistant",
+        "content": "```\nexec_shell(\"kubectl get statefulsets -n tidb-cluster\")\n```"
+    },
+]
+}
+
+conversation_1 = {
+    "messages":[
+    {
+        "role": "user",
+        "content": "```\nsubmit(\"Yes\")\n```"
+    },
+    {
+        "role": "assistant",
+        "content": "```\nexec_shell(\"kubectl get statefulsets -n tidb-cluster\")\n```"
+    },
+    {
+        "role": "user",
+        "content": "```\nsubmit(\"Yes\")\n```"
+    },
+    {
+        "role": "assistant",
+        "content": "```\nsubmit(\"Yes\")\n```"
+    },
+]
+}
+
+conversations = [conversation_0] + [conversation_1 for _ in range(100)]
+
 completions = [
     [{"role": "assistant", "content": "```\nexec_shell(\"kubectl get pods -n test-social-network | grep compost-post-service\")\n```"}], # Correct format
     [{"role": "assistant", "content": "Action: exec_shell(\"kubectl get configmaps -n test-social-network\")"}], # Incorrect format
@@ -48,21 +124,70 @@ results = [
     }
 ]
 
-def format_reward(completions, **kwargs):
-    """Reward function that checks if the completion has the correct API call format."""
+# def format_reward(completions, **kwargs):
+#     """Reward function that checks if the completion has the correct API call format."""
+#     # Check if reasoning model parameter is passed
+#     is_reasoning = kwargs.get("is_reasoning", False)
+
+#     if is_reasoning:
+#         # Standard pattern for reasoning models (no need for think/answer format)
+#         pattern = r"^```\nexec_shell\([\"].*?[\"].*\)\n```$|^```\nsubmit\(.*\)\n```$"
+#     else:
+#         # Pattern requiring think/answer format for non-reasoning models
+#         pattern = r"^<think>.*?</think><answer>```\nexec_shell\([\"].*?[\"].*\)\n```</answer>$|^<think>.*?</think><answer>```\nsubmit\(.*\)\n```</answer>$"
+    
+#     completion_contents = [completion[0]["content"] for completion in completions]
+#     matches = [re.match(pattern, content) for content in completion_contents]
+#     return [0.0 if match else -1.0 for match in matches]
+
+def format_reward(conversations, **kwargs):
+    """
+    Reward function that evaluates conversations based on the format correctness
+    of completions.
+    
+    Args:
+        conversations: List of conversation dictionaries, each containing a "messages" list
+        **kwargs: Additional parameters, including is_reasoning flag
+        
+    Returns:
+        List of reward scores, one per conversation
+    """
     # Check if reasoning model parameter is passed
     is_reasoning = kwargs.get("is_reasoning", False)
 
+    # Define the pattern based on reasoning mode
     if is_reasoning:
-        # Standard pattern for reasoning models (no need for think/answer format)
+        # Standard pattern for reasoning models
         pattern = r"^```\nexec_shell\([\"].*?[\"].*\)\n```$|^```\nsubmit\(.*\)\n```$"
     else:
         # Pattern requiring think/answer format for non-reasoning models
         pattern = r"^<think>.*?</think><answer>```\nexec_shell\([\"].*?[\"].*\)\n```</answer>$|^<think>.*?</think><answer>```\nsubmit\(.*\)\n```</answer>$"
     
-    completion_contents = [completion[0]["content"] for completion in completions]
-    matches = [re.match(pattern, content) for content in completion_contents]
-    return [0.0 if match else -1.0 for match in matches]
+    # Calculate reward for each conversation
+    conversation_rewards = []
+    
+    for conversation in conversations:
+        # Extract completions from the conversation
+        completions = [msg for msg in conversation["messages"] 
+                             if msg.get("role") == "assistant"]
+        
+        # Check format of each completion
+        format_checks = [bool(re.match(pattern, completion["content"])) for completion in completions]
+        
+        # Calculate conversation-level metrics
+        total_completions = len(format_checks)
+        correct_completions = sum(format_checks)
+        
+        # Calculate correctness ratio (0.0 to 1.0)
+        correctness_ratio = correct_completions / total_completions
+        
+        # Convert to reward score (-1.0 to 1.0)
+        # Perfect format: 1.0, All wrong: -1.0
+        reward = (correctness_ratio * 2) - 1.0
+        
+        conversation_rewards.append(reward)
+    
+    return conversation_rewards
 
 def detection_eval(result):
     # Check correctness of detection
@@ -165,9 +290,12 @@ def get_reward_funcs(script_args) -> list[Callable]:
 
 if __name__ == "__main__":
     # Example usage
-    rewards = format_reward(completions)
-    print(rewards)  # Output: [0.0, -1.0, -1.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0]
+    # rewards = format_reward(completions)
+    # print(rewards)  # Output: [0.0, -1.0, -1.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0]
+    # Example usage of format_reward
+    rewards = format_reward(conversations, is_reasoning=True)
+    print(rewards)
 
-    # Example usage of result_reward_func
-    result_rewards = result_reward_func(results)
-    print(result_rewards)  # Output: [1.0, -1.0, -1.0, -1.0]
+    # # Example usage of result_reward_func
+    # result_rewards = result_reward_func(results)
+    # print(result_rewards)  # Output: [1.0, -1.0, -1.0, -1.0]

@@ -447,6 +447,8 @@ class GRPOTrainer(Trainer):
             reward_funcs = [reward_funcs]
         self.reward_func_names = []
         for i, reward_func in enumerate(reward_funcs):
+            # If the reward function is a string, load it as a pretrained model
+            # If the reward function is a python function, use it as is
             if isinstance(reward_func, str):
                 reward_funcs[i] = AutoModelForSequenceClassification.from_pretrained(
                     reward_func, num_labels=1, **model_init_kwargs
@@ -983,6 +985,30 @@ class GRPOTrainer(Trainer):
     def _generate_and_score_completions(
         self, inputs: list[dict[str, Union[torch.Tensor, Any]]]
     ) -> dict[str, Union[torch.Tensor, Any]]:
+        """
+        Generates completions for the given inputs and scores them.
+        
+        Args:
+            inputs (list[dict[str, Union[torch.Tensor, Any]]]): The inputs for which to generate completions.
+                Each input is a dictionary containing the prompt and other relevant information.
+                - prompt (str): The input prompt for the model.
+                - other keys: Any other keys that are relevant for the model.
+                Example:
+                [
+                    {"prompt": "What is 2+2?", "task": "math"},
+                    {"prompt": "Write a function that returns the sum of two numbers.", "task": "code"},
+                    {"prompt": "What is 3*4?", "task": "math"},
+                    {"prompt": "Write a function that returns the product of two numbers.", "task": "code"},
+                ]
+        Returns:
+            dict[str, Union[torch.Tensor, Any]]: The inputs with the generated completions and their scores.
+                The returned dictionary contains the following keys:
+                - prompt (torch.Tensor): The input prompt tensor.
+                - completion (torch.Tensor): The generated completion tensor.
+                - attention_mask (torch.Tensor): The attention mask for the input and completion tensors.
+                - rewards (torch.Tensor): The rewards for the generated completions.
+                - other keys: Any other keys that are relevant for the model.
+        """
         device = self.accelerator.device
         mode = "eval" if self.control.should_evaluate else "train"
 
@@ -1106,7 +1132,7 @@ class GRPOTrainer(Trainer):
         rewards_per_func = torch.zeros(len(prompts), len(self.reward_funcs), device=device)
         for i, (reward_func, reward_processing_class, reward_func_name) in enumerate(
             zip(self.reward_funcs, self.reward_processing_classes, self.reward_func_names)
-        ):
+        ): # Repeat for each reward function
             with profiling_context(self, reward_func_name):
                 if isinstance(
                     reward_func, nn.Module
@@ -1217,7 +1243,7 @@ class GRPOTrainer(Trainer):
         }
 
     def _prepare_aligned_multi_turn_masks(
-        self, inputs: dict[str, Union[torch.Tensor, Any]]
+        self, inputs: list[dict[str, Union[torch.Tensor, Any]]]
     ) -> dict[str, Union[torch.Tensor, Any]]:
         """
         Generate masks for batched multi-turn conversations with position alignment.
@@ -1357,7 +1383,7 @@ class GRPOTrainer(Trainer):
         }
 
     def _generate_and_score_conversations(
-        self, inputs: dict[str, Union[torch.Tensor, Any]]
+        self, inputs: list[dict[str, Union[torch.Tensor, Any]]]
     ) -> dict[str, Union[torch.Tensor, Any]]:
 
         device = self.accelerator.device
@@ -1369,6 +1395,7 @@ class GRPOTrainer(Trainer):
 
         # Process the conversations to get the prompt and completion IDs
         masks = self._prepare_aligned_multi_turn_masks(inputs)
+        conversations = [x for x in inputs]
         conversation_ids = masks["conversation_ids"]
         attention_mask = masks["attention_mask"]
         prompt_mask = masks["prompt_mask"]
@@ -1385,36 +1412,51 @@ class GRPOTrainer(Trainer):
             else:
                 old_per_token_logps = None
 
-        def generate_test_advantages(batch_size=4, device="cuda"):
-            """
-            Generate test advantages with appropriate shape for GRPO trainer
-            
-            Args:
-                batch_size: Number of examples in batch
-                device: Device to place tensor on
-                
-            Returns:
-                Tensor of shape (batch_size,) with random advantage values
-            """
-            # Use normal distribution centered at 0 with std 1
-            # This creates both positive and negative advantages
-            advantages = torch.randn(batch_size, device=device)
-            
-            # Optional: scale to reasonable range (-2 to 2)
-            advantages = advantages * 1.0
-            
-            return advantages
-        
-        batch_size = conversation_ids.size(0)
-        
-        test_advantages = generate_test_advantages(batch_size=batch_size, device=device)
+        rewards_per_func = torch.zeros(len(conversations), len(self.reward_funcs), device=device)
+        for i, (reward_func, reward_processing_class, reward_func_name) in enumerate(
+            zip(self.reward_funcs, self.reward_processing_classes, self.reward_func_names)
+        ): # Repeat for each reward function
+            with profiling_context(self, reward_func_name):
+                # Repeat all input columns (but "messages") to match the number of generations
+                keys = [key for key in inputs[0] if key not in ["messages"]]
+                reward_kwargs = {key: [example[key] for example in inputs] for key in keys}
+                output_reward_func = reward_func(conversations=conversations, **reward_kwargs)
+                # Convert None values to NaN
+                output_reward_func = [reward if reward is not None else torch.nan for reward in output_reward_func]
+
+                rewards_per_func[:, i] = torch.tensor(output_reward_func, dtype=torch.float32, device=device)
+
+        # Gather the reward per function: this part is crucial, because the rewards are normalized per group and the
+        # completions may be distributed across processes
+        rewards_per_func = gather(rewards_per_func)
+
+        # Apply weights to each reward function's output and sum
+        rewards = (rewards_per_func * self.reward_weights.to(device).unsqueeze(0)).nansum(dim=1)
+
+        # Compute grouped-wise rewards
+        mean_grouped_rewards = rewards.view(-1, self.num_generations).mean(dim=1) # shape (B,)
+        std_grouped_rewards = rewards.view(-1, self.num_generations).std(dim=1)
+
+        # Normalize the rewards to compute the advantages
+        mean_grouped_rewards = mean_grouped_rewards.repeat_interleave(self.num_generations, dim=0)
+        std_grouped_rewards = std_grouped_rewards.repeat_interleave(self.num_generations, dim=0)
+        advantages = rewards - mean_grouped_rewards
+        if self.scale_rewards:
+            advantages = advantages / (std_grouped_rewards + 1e-4)
+
+        # Slice to keep only the local part of the data
+        process_slice = slice(
+            self.accelerator.process_index * len(conversations),
+            (self.accelerator.process_index + 1) * len(conversations),
+        )
+        advantages = advantages[process_slice]
 
         return {
             "conversation_ids": conversation_ids,
             "attention_mask": attention_mask,
             "prompt_mask": prompt_mask,
             "completion_mask": completion_mask,
-            "advantages": test_advantages,
+            "advantages": advantages,
             "old_per_token_logps": old_per_token_logps,
             "ref_per_token_logps": None,
         }
