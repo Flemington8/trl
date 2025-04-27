@@ -1392,6 +1392,7 @@ class GRPOTrainer(Trainer):
 
         # Generate conversations using outer API, we will complete this function in the feature, prompts, pid
         # conversations = self._aiopslab_api()
+        # self.conversation_fetcher.fetch(prompts_text, num_generations=G)  # Fetch conversations
 
         # Process the conversations to get the prompt and completion IDs
         masks = self._prepare_aligned_multi_turn_masks(inputs)

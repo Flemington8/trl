@@ -92,8 +92,8 @@ training_args = GRPOConfig(output_dir="./output/Qwen2.5-Coder-0.5B-Instruct-GRPO
 
 peft_config = LoraConfig(
     r=8,
-    lora_alpha=8,
-    lora_dropout=0.05,        # Dropout probability
+    lora_alpha=8,            # Scaling factor for LoRA
+    lora_dropout=0.05,
     bias="none",              # Don't train bias parameters to save memory
     task_type="CAUSAL_LM",    # Task type for the model
     # Target specific attention modules in Qwen2.5 architecture
