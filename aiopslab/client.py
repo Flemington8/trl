@@ -22,6 +22,7 @@ class AIOpsLabClient:
         agent_name="vllm", 
         max_steps=10,
         # vLLM specific parameters
+        model: str = "Qwen/Qwen2.5-Coder-0.5B-Instruct",
         repetition_penalty: float = 1.0,
         temperature: float = 1.0,
         top_p: float = 1.0,
@@ -82,7 +83,7 @@ class AIOpsLabClient:
         # Add vLLM-specific parameters if the agent is vllm
         if agent_name == "vllm":
             vllm_params = {
-                "n": n,
+                "model": model,
                 "repetition_penalty": repetition_penalty,
                 "temperature": temperature,
                 "top_p": top_p,

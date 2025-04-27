@@ -673,6 +673,7 @@ class GRPOTrainer(Trainer):
                     "conversation fetcher."
                 )
             self.conversation_generator = conversation_generator
+            self.conversation_generator.model(model)
 
             if self.accelerator.is_main_process:
                 self.conversation_generator = conversation_generator
@@ -1286,7 +1287,6 @@ class GRPOTrainer(Trainer):
                         ],
                         # Optional metadata fields
                         "problem_id": "k8s_target_port-misconfig-detection-1",
-                        "task": "detection"
                     },
                     # More conversations...
                 ]

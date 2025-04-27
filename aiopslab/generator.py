@@ -17,6 +17,7 @@ class AIOpsLabConversationGenerator(ConversationGenerator):
         self,
         aiopslab_host: str = "localhost",
         aiopslab_port: int = 8888,
+        model: str = "Qwen/Qwen2.5-Coder-0.5B-Instruct",
         default_agent: str = "vllm",
         default_steps: int = 10,
         *args,
@@ -24,6 +25,7 @@ class AIOpsLabConversationGenerator(ConversationGenerator):
     ):
         super().__init__(*args, **kwargs)
         self.client = AIOpsLabClient(f"http://{aiopslab_host}:{aiopslab_port}")
+        self.model = model
         self.default_agent = default_agent
         self.default_steps = default_steps
 
@@ -62,6 +64,7 @@ class AIOpsLabConversationGenerator(ConversationGenerator):
                     problem_id=problem_id,
                     agent_name=agent_name,
                     max_steps=max_steps,
+                    model=self.model,
                     repetition_penalty=repetition_penalty,
                     temperature=temperature,
                     top_p=top_p,
@@ -77,8 +80,9 @@ class AIOpsLabConversationGenerator(ConversationGenerator):
                 conversations.append(
                     {
                         "agent": response["agent"],
+                        "task": inputs["task"],
                         "problem_id": response["problem_id"],
-                        "trace": response["trace"],
+                        "messages": response["trace"],
                         "results": response["results"],
                     }
                 )
