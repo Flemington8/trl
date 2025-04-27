@@ -850,9 +850,11 @@ class GRPOTrainer(Trainer):
                 attention_mask_batch = attention_mask[i : i + batch_size]
 
                 # We add 1 to `logits_to_keep` because the last logits of the sequence is later excluded
+                # The extra +1 when passing logits_to_keep to the model compensates for the fact that the model returns, for each input token, the logits predicting the next token. 
+                # By requesting K+1 logits and then dropping the very last prediction (which corresponds to the token following your final completion token), you end up with exactly K log‐prob entries aligned one‐to‐one with each completion token.
                 logits = model(
                     input_ids=input_ids_batch, attention_mask=attention_mask_batch, logits_to_keep=logits_to_keep + 1
-                ).logits # shape: (batch_size, seq_length, vocab_size)
+                ).logits # shape: (batch_size, length_of_logits_to_keep, vocab_size)
                 logits = logits[:, :-1, :]  # (B, L-1, V), exclude the last logit: it corresponds to the next token pred
                 input_ids_batch = input_ids_batch[:, -logits_to_keep:]
                 # For transformers<=4.48, logits_to_keep argument isn't supported, so here we drop logits ourselves.
@@ -877,16 +879,11 @@ class GRPOTrainer(Trainer):
                 # print(f"shape of logits_to_keep: {logits_to_keep.shape}")
                 # print(f"shape of logits_to_keep_indices: {logits_to_keep_indices.shape}")
 
-                # TODO: We add 1 to `logits_to_keep` because the last logits of the sequence is later excluded
+                # logits_to_keep_indices is a tensor of indices, those exact indices are used for advanced indexing. We do not need a separate '+1' then drop one
                 logits = model(
                     input_ids=input_ids_batch, attention_mask=attention_mask_batch, logits_to_keep=logits_to_keep_indices.tolist()
                 ).logits # shape: (batch_size, length_of_logits_to_keep, vocab_size)
-                # logits = logits[:, :-1, :]  # (B, L-1, V), exclude the last logit: it corresponds to the next token pred
-                # print(f"shape of logits: {logits.shape}")
                 input_ids_batch = input_ids_batch[logits_to_keep_batch].view(batch_size, -1) # shape: (B, length_of_logits_to_keep)
-                # print(f"shape of input_ids_batch: {input_ids_batch.shape}")
-                # For transformers<=4.48, logits_to_keep argument isn't supported, so here we drop logits ourselves.
-                # See https://github.com/huggingface/trl/issues/2770
                 # Divide logits by sampling temperature.
                 # See https://huggingface.co/blog/the_n_implementation_details_of_rlhf_with_ppo#policy-training-implementation-details
                 logits = logits / self.temperature
