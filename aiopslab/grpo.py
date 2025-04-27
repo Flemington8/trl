@@ -225,8 +225,7 @@ trainer = GRPOTrainer(
     peft_config=peft_config,
 )
 
-trainer.conversation_fetcher = AIOpsLabConversationFetcher(
-        base_url="http://localhost:8888",
-        accelerator=trainer.accelerator)
+trainer.conversation_generator = AIOpsLabConversationGenerator(
+        base_url="http://localhost:8888")
 
 trainer.train()

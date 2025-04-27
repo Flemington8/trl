@@ -1,5 +1,6 @@
 import requests
 import json
+from typing import Optional
 
 class AIOpsLabClient:
     def __init__(self, base_url="http://localhost:8888"):
@@ -15,13 +16,88 @@ class AIOpsLabClient:
         response = requests.get(f"{self.base_url}/agents")
         return response.json()
 
-    def run_simulation(self, problem_id, agent_name="deepseek", max_steps=10):
-        """Run a simulation with specified parameters"""
+    def run_simulation(
+        self, 
+        problem_id, 
+        agent_name="vllm", 
+        max_steps=10,
+        # vLLM specific parameters
+        repetition_penalty: float = 1.0,
+        temperature: float = 1.0,
+        top_p: float = 1.0,
+        top_k: int = -1,
+        min_p: float = 0.0,
+        max_tokens: int = 16,
+        guided_decoding_regex: Optional[str] = None
+    ):        
+        """
+        Run a simulation with specified parameters.
+        
+        Args:
+            problem_id: The ID of the problem to solve
+            agent_name: Name of the agent to use (default: "vllm")
+            max_steps: Maximum steps for the simulation
+            
+            # vLLM specific generation parameters (only used when agent_name is "vllm")
+            n: Number of completions to generate
+            repetition_penalty: Penalty for repeating tokens
+            temperature: Sampling temperature
+            top_p: Nucleus sampling probability threshold
+            top_k: Top-k sampling parameter (-1 to disable)
+            min_p: Minimum probability for tokens to be considered
+            max_tokens: Maximum number of tokens to generate
+            guided_decoding_regex: Regex pattern for guided decoding
+            
+        Returns:
+            JSON response from the server or None if error.
+            Example: {
+                "agent": "Qwen2.5-Coder-3B-Instruct",
+                "session_id": "1234567890",
+                "problem_id": "misconfig_app_hotel_res-mitigation-1",
+                "start_time": 1743008569.2835402,
+                "end_time": 1743008569.493365,
+                "results": {
+                    "Localization Accuracy": 0.0,
+                    "success": false,
+                    "is_subset": false,
+                    "TTL": 0.209824800491333,
+                    "steps": 10,
+                    "in_tokens": 90,
+                    "out_tokens": 160
+                },
+                "trace": [
+                    {"role": "assistant", "content": "Action: exec_shell(\"kubectl get pods -n test-hotel-reservation\")"},
+                    {"role": "env", "content": "Error parsing response: No API call found!"},
+                    ...
+                ]
+            }
+        """
+        # Basic payload for any agent
         payload = {
             "problem_id": problem_id,
             "agent_name": agent_name,
             "max_steps": max_steps
         }
+
+        # Add vLLM-specific parameters if the agent is vllm
+        if agent_name == "vllm":
+            vllm_params = {
+                "n": n,
+                "repetition_penalty": repetition_penalty,
+                "temperature": temperature,
+                "top_p": top_p,
+                "top_k": top_k,
+                "min_p": min_p,
+                "max_tokens": max_tokens,
+            }
+            
+            # Only add guided_decoding_regex if it's provided
+            if guided_decoding_regex is not None:
+                vllm_params["guided_decoding_regex"] = guided_decoding_regex
+                
+            # Add vLLM parameters to payload
+            payload["vllm_params"] = vllm_params
+
         response = requests.post(
             f"{self.base_url}/simulate", 
             json=payload
@@ -36,7 +112,7 @@ class AIOpsLabClient:
 # Example usage
 if __name__ == "__main__":
     # Replace with your actual server IP or hostname
-    client = AIOpsLabClient("http://137.184.6.93:8888")
+    client = AIOpsLabClient("http://localhost:8888")
     
     # List problems
     problems = client.list_problems()
