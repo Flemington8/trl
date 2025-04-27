@@ -296,6 +296,20 @@ class GRPOConfig(TrainingArguments):
         metadata={"help": "Regex for vLLM guided decoding. If `None` (default), guided decoding is disabled."},
     )
 
+    is_conversation: bool = field(
+        default=False,
+        metadata={
+            "help": "Whether to use the multi-turn conversation training format."
+        },
+    )
+
+    conversation_fetcher: Optional[str] = field(
+        default=None,
+        metadata={
+            "help": "The conversation fetcher to use. If `None`, the default conversation fetcher is used."
+        },
+    )
+
     # Parameters that control the training
     learning_rate: float = field(
         default=1e-6,

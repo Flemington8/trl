@@ -47,6 +47,7 @@ from transformers.utils import is_datasets_available, is_peft_available
 from ..data_utils import apply_chat_template, is_conversational, maybe_apply_chat_template
 from ..extras.profiling import profiling_context, profiling_decorator
 from ..extras.vllm_client import VLLMClient
+from ..extras.conversation_generator import ConversationGenerator
 from ..import_utils import is_deepspeed_available, is_liger_kernel_available, is_rich_available, is_vllm_available
 from ..models import create_reference_model, prepare_deepspeed, unwrap_model_for_generation
 from .callbacks import SyncRefModelCallback
@@ -364,12 +365,12 @@ class GRPOTrainer(Trainer):
         args: Optional[GRPOConfig] = None,
         train_dataset: Optional[Union[Dataset, IterableDataset]] = None,
         eval_dataset: Optional[Union[Dataset, IterableDataset, dict[str, Union[Dataset, IterableDataset]]]] = None,
+        conversation_generator: Optional[ConversationGenerator] = None,
         processing_class: Optional[PreTrainedTokenizerBase] = None,
         reward_processing_classes: Optional[Union[PreTrainedTokenizerBase, list[PreTrainedTokenizerBase]]] = None,
         callbacks: Optional[list[TrainerCallback]] = None,
         optimizers: tuple[Optional[torch.optim.Optimizer], Optional[torch.optim.lr_scheduler.LambdaLR]] = (None, None),
         peft_config: Optional["PeftConfig"] = None,
-        is_conversation: bool = False,
     ):
         # Args
         if args is None:
@@ -491,8 +492,6 @@ class GRPOTrainer(Trainer):
                 reward_processing_classes[i] = reward_processing_class
         self.reward_processing_classes = reward_processing_classes
 
-        self.is_conversation = is_conversation
-
         # Data collator
         def data_collator(features):  # No data collation is needed in GRPO
             return features
@@ -507,6 +506,7 @@ class GRPOTrainer(Trainer):
         self.min_p = args.min_p
         self.repetition_penalty = args.repetition_penalty
         self.use_vllm = args.use_vllm
+        self.is_conversation = args.is_conversation
         self.use_liger_loss = args.use_liger_loss
         self.loss_type = args.loss_type
         self.scale_rewards = args.scale_rewards
@@ -665,6 +665,25 @@ class GRPOTrainer(Trainer):
                 repetition_penalty=self.repetition_penalty,
                 cache_implementation=args.cache_implementation,
             )
+
+        if self.is_conversation:
+            if conversation_generator is None:
+                raise ValueError(
+                    "Conversation fetcher is required when `is_conversation` is set to True. Please provide a "
+                    "conversation fetcher."
+                )
+            self.conversation_generator = conversation_generator
+
+            if self.accelerator.is_main_process:
+                self.conversation_generator = conversation_generator
+                self.conversation_generator.init_communicator()
+
+            self._last_loaded_step = -1  # tag to avoid useless loading during grad accumulation
+
+            # When using conversation fetcher, the main process is responsible for loading the model weights. This can cause process
+            # desynchronization and seems to lead to DeepSpeed hanging during initialization. To prevent this, we
+            # synchronize all processes after conversation fetcher has been fully initialized.
+            self.accelerator.wait_for_everyone()
 
         # Gradient accumulation requires scaled loss. Normally, loss scaling in the parent class depends on whether the
         # model accepts loss-related kwargs. Since we compute our own loss, this check is irrelevant. We set
@@ -1239,7 +1258,7 @@ class GRPOTrainer(Trainer):
             "ref_per_token_logps": ref_per_token_logps,
         }
 
-    def _prepare_aligned_multi_turn_masks(
+    def _prepare_conversations(
         self, inputs: list[dict[str, Union[torch.Tensor, Any]]]
     ) -> dict[str, Union[torch.Tensor, Any]]:
         """
@@ -1249,15 +1268,44 @@ class GRPOTrainer(Trainer):
         - Masks for the nth prompt/completion align positionally across conversations
         - Conversations with fewer turns have proper masking for missing turns
         - logits_to_keep_mask correctly identifies only valid completion tokens
+
+        Args:
+            inputs (list[dict[str, Union[torch.Tensor, Any]]]): The inputs for which to generate masks.
+                Each input is a dictionary containing the conversation and other relevant information.
+                - messages (list[dict[str, str]]): The conversation messages.
+                - other keys: Any other keys that are relevant for the model.
+                Example:
+                [
+                    {
+                        "messages": [
+                            {"role": "user", "content": "Hello"},
+                            {"role": "assistant", "content": "Hi there!"},
+                            {"role": "user", "content": "How are you?"},
+                            {"role": "assistant", "content": "I'm doing well!"}
+                            # ... more turns
+                        ],
+                        # Optional metadata fields
+                        "problem_id": "k8s_target_port-misconfig-detection-1",
+                        "task": "detection"
+                    },
+                    # More conversations...
+                ]
+        Returns:
+            dict[str, Union[torch.Tensor, Any]]: The inputs with the generated masks.
+                The returned dictionary contains the following keys:
+                - conversation_ids (torch.Tensor): The input conversation tensor.
+                - prompt_mask (torch.Tensor): The prompt mask tensor.
+                - completion_mask (torch.Tensor): The completion mask tensor.
+                - attention_mask (torch.Tensor): The attention mask for the promt and completion tensors.
         """
         batch_size = len(inputs)
         device = self.accelerator.device
         
-        # Step 1: Find the maximum number of turns across all conversations
+        # Find the maximum number of turns across all conversations
         max_turns = max(len([m for m in conv["messages"] if m["role"] == "assistant"]) 
                     for conv in inputs)
         
-        # Step 2: Process each conversation, separating by turns
+        # Process each conversation, separating by turns
         all_prompt_texts_by_turn = [[] for _ in range(max_turns)]
         all_completion_texts_by_turn = [[] for _ in range(max_turns)]
         
@@ -1296,7 +1344,7 @@ class GRPOTrainer(Trainer):
                 all_prompt_texts_by_turn[turn_idx].append("")
                 all_completion_texts_by_turn[turn_idx].append("")
         
-        # Step 3: Process each turn separately and collect tensors
+        # Process each turn separately and collect tensors
         prompt_ids_by_turn = []
         prompt_mask_by_turn = []
         completion_ids_by_turn = []
@@ -1326,7 +1374,7 @@ class GRPOTrainer(Trainer):
             completion_ids_by_turn.append(completion_inputs["input_ids"])
             completion_mask_by_turn.append(completion_inputs["attention_mask"])
         
-        # Step 4: Determine the sizes for full tensors
+        # Determine the sizes for full tensors
         turn_prompt_lengths = [ids.size(1) for ids in prompt_ids_by_turn]
         turn_completion_lengths = [ids.size(1) for ids in completion_ids_by_turn]
         
@@ -1334,7 +1382,7 @@ class GRPOTrainer(Trainer):
         total_completion_length = sum(turn_completion_lengths)
         total_length = total_prompt_length + total_completion_length
         
-        # Step 5: Create full tensors with proper alignment
+        # Create full tensors with proper alignment
         conversation_ids = torch.zeros((batch_size, total_length), dtype=torch.long, device=device)
         attention_mask = torch.zeros((batch_size, total_length), dtype=torch.long, device=device)
         prompt_mask = torch.zeros((batch_size, total_length), dtype=torch.bool, device=device)
@@ -1382,18 +1430,64 @@ class GRPOTrainer(Trainer):
     def _generate_and_score_conversations(
         self, inputs: list[dict[str, Union[torch.Tensor, Any]]]
     ) -> dict[str, Union[torch.Tensor, Any]]:
+        """
+        Args:
+            inputs (list[dict[str, Union[torch.Tensor, Any]]]): The inputs for which to generate conversations.
+            Example:
+            [
+                {"problem_id": "k8s_target_port-misconfig-detection-1", "task": "detection"},
+                {"problem_id": "k8s_target_port-misconfig-detection-2", "task": "detection"},
+                {"problem_id": "k8s_target_port-misconfig-detection-3", "task": "detection"},
+                {"problem_id": "k8s_target_port-misconfig-detection-4", "task": "detection"},
+            ]
+        Returns:
+            dict[str, Union[torch.Tensor, Any]]: The generated conversations and their scores.
+        """
 
         device = self.accelerator.device
         mode = "eval" if self.control.should_evaluate else "train"
+        
+        # First, have main process load weights if needed
+        if self.state.global_step != self._last_loaded_step:
+            self._move_model_to_vllm()
+            self._last_loaded_step = self.state.global_step
+
+        # Generate conversations using conversation generator: gather all inputs and use them in a single call in the main process
+        # Unlike the implementation in _generate_and_score_completions, we don't need to apply the chat template here
+        all_inputs = gather_object(inputs)
+
+        if self.accelerator.is_main_process:
+            # Since 'inputs' contains 'num_generations' duplicates, we first take unique inputs, and generate
+            # num_generations outputs for each one. This is faster than generating outputs for each duplicate
+            # prompt individually.
+            ordered_set_of_inputs = all_inputs[:: self.num_generations]
+            conversations = self.conversation_generator.generate(
+                inputs=ordered_set_of_inputs,
+                n=self.num_generations,
+                repetition_penalty=self.repetition_penalty,
+                temperature=self.temperature,
+                top_p=self.top_p,
+                top_k=-1 if self.top_k is None else self.top_k,
+                min_p=0.0 if self.min_p is None else self.min_p,
+                max_tokens=self.max_completion_length,
+                guided_decoding_regex=self.guided_decoding_regex,
+            )
+        else:
+            # TODO: Handle the case where the main process is not generating conversations
+            conversations = [None] * len(all_inputs)
+        # Broadcast the conversations from the main process to all processes, ensuring each process receives its
+        # corresponding slice.
+        conversations = broadcast_object_list(conversations, from_process=0)
+        process_slice = slice(
+            self.accelerator.process_index * len(inputs),
+            (self.accelerator.process_index + 1) * len(inputs),
+        )
+        conversations = conversations[process_slice]
+        
         batch_size = self.args.per_device_train_batch_size if mode == "train" else self.args.per_device_eval_batch_size
 
-        # Generate conversations using outer API, we will complete this function in the feature, prompts, pid
-        # conversations = self._aiopslab_api()
-        # self.conversation_fetcher.fetch(prompts_text, num_generations=G)  # Fetch conversations
-
         # Process the conversations to get the prompt and completion IDs
-        masks = self._prepare_aligned_multi_turn_masks(inputs)
-        conversations = [x for x in inputs]
+        masks = self._prepare_conversations(conversations)
         conversation_ids = masks["conversation_ids"]
         attention_mask = masks["attention_mask"]
         prompt_mask = masks["prompt_mask"]
