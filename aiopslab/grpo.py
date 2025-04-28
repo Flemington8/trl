@@ -191,6 +191,7 @@ conversation_0 = {
 # dataset = Dataset.from_list(conversations)
 
 training_args = GRPOConfig(output_dir="./output/Qwen2.5-Coder-0.5B-Instruct-GRPO",
+                        num_generations=4,
                         beta=0.0,
                         fp16=True,
                         per_device_train_batch_size=1,
@@ -236,5 +237,5 @@ trainer = GRPOTrainer(
 
 trainer.train()
 
-# python -m trl.scripts.vllm_serve --model Qwen/Qwen2.5-Coder-0.5B-Instruct --dtype float16 --gpu_memory_utilization 0.6
-# accelerate launch --config_file aiopslab/accelerate_configs/deepspeed_zero2.yaml aiopslab/grpo.py
+# CUDA_VISIBLE_DEVICES=0 python -m trl.scripts.vllm_serve --model Qwen/Qwen2.5-Coder-0.5B-Instruct --dtype float16 --gpu_memory_utilization 0.6
+# CUDA_VISIBLE_DEVICES=1,2 accelerate launch --config_file aiopslab/accelerate_configs/deepspeed_zero2.yaml aiopslab/grpo.py
