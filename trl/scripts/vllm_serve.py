@@ -23,6 +23,7 @@ from multiprocessing import Pipe, Process
 from multiprocessing.connection import Connection
 from typing import Optional
 
+import time, uuid
 import torch
 
 from trl import TrlParser
@@ -36,7 +37,7 @@ from trl.import_utils import (
 
 
 if is_fastapi_available():
-    from fastapi import FastAPI
+    from fastapi import FastAPI, Request
 
 
 if is_pydantic_available():
@@ -52,6 +53,7 @@ if is_vllm_available():
     from vllm.distributed.device_communicators.pynccl import PyNcclCommunicator
     from vllm.distributed.parallel_state import get_world_group
     from vllm.distributed.utils import StatelessProcessGroup
+    from vllm.entrypoints.openai.protocol import ChatCompletionRequest, ChatCompletionResponse
     from vllm.sampling_params import GuidedDecodingParams
     from vllm.utils import get_open_port
 
@@ -477,6 +479,102 @@ def main(script_args: ScriptArguments):
         all_outputs = list(chain.from_iterable(all_outputs))  # from list of list to single list
         completion_ids = [list(output.token_ids) for outputs in all_outputs for output in outputs.outputs]
         return {"completion_ids": completion_ids}
+
+    def _messages_to_prompt(messages: list[dict]) -> str:
+        """
+        Convert OpenAI-Chat messages into a single text prompt understood by
+        most chat-tuned models (“<|im_start|>” format, see vLLM docs).
+        """
+        prompt_parts: list[str] = []
+        for message in messages:
+            role = message["role"]
+            content = message["content"]
+            prompt_parts.append(f"<|im_start|>{role}\n{content}<|im_end|>")
+        prompt_parts.append("<|im_start|>assistant")          # generation cue
+        return "\n".join(prompt_parts)
+
+    @app.post("/v1/chat/completions", response_model=ChatCompletionResponse)
+    async def create_chat_completions(request: ChatCompletionRequest,  raw_request: Request):
+        """
+        Creates chat completions for the provided messages using OpenAI-compatible API format.
+        
+        Args:
+            request (ChatCompletionRequest): The chat completion request containing messages and parameters
+            raw_request (Request): The raw FastAPI request object
+        
+        Returns:
+            ChatCompletionResponse: The formatted chat completion response
+        """
+        # Create sampling parameters from request
+        sampling_params = SamplingParams(
+            n=request.n if request.n is not None else 1,
+            max_tokens=request.max_tokens if request.max_tokens is not None else 16,
+            temperature=request.temperature if request.temperature is not None else 1.0,
+            top_p=request.top_p if request.top_p is not None else 1.0,
+            presence_penalty=request.presence_penalty if request.presence_penalty is not None else 0.0,
+            frequency_penalty=request.frequency_penalty if request.frequency_penalty is not None else 0.0,
+            stop=request.stop if request.stop is not None else None,
+        )
+
+        # Build prompts from messages
+        prompt = _messages_to_prompt(request.messages)
+        prompts = [prompt] * request.n
+
+        # Distribute prompts across DP ranks
+        chunked_prompts = chunk_list(prompts, script_args.data_parallel_size)
+
+        # Send the prompts to each worker
+        for connection, prompts_chunk in zip(connections, chunked_prompts):
+            if not prompts_chunk:
+                prompts_chunk = ["<placeholder>"]
+            kwargs = {"prompts": prompts_chunk, "sampling_params": sampling_params}
+            connection.send({"type": "call", "method": "generate", "kwargs": kwargs})
+        
+        # Receive results
+        all_outputs = [connection.recv() for connection in connections]
+        
+        # Handle empty prompts
+        all_outputs = [output for output, prompts_chunk in zip(all_outputs, chunked_prompts) if prompts_chunk]
+        
+        # Flatten and combine all results
+        all_outputs = list(chain.from_iterable(all_outputs))
+
+        # Create OpenAI-compatible response
+        completions = []
+        created_time = int(time.time())
+        
+        for i, output in enumerate(all_outputs):
+            for output_obj in output.outputs:
+                # Get the generated text
+                completion_text = output_obj.text
+                
+                # Create completion object
+                message_content = completion_text.strip() if completion_text else ""
+                choice = {
+                    "index": i,
+                    "message": {
+                        "role": "assistant", 
+                        "content": message_content
+                    },
+                    "finish_reason": output_obj.finish_reason,
+                }
+                completions.append(choice)
+    
+        # Construct the final response
+        response = {
+            "id": f"chatcmpl-{uuid.uuid4()}",
+            "object": "chat.completion",
+            "created": created_time,
+            "model": script_args.model,
+            "choices": completions,
+            "usage": {
+                "prompt_tokens": sum(len(output.prompt_token_ids) for output in all_outputs),
+                "completion_tokens": sum(len(output.outputs[0].token_ids) for output in all_outputs),
+                "total_tokens": sum(len(output.prompt_token_ids) + len(output.outputs[0].token_ids) for output in all_outputs),
+            }
+        }
+        
+        return response
 
     class InitCommunicatorRequest(BaseModel):
         host: str
