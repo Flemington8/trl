@@ -1,7 +1,8 @@
 import logging
-from typing import Optional, List, Dict, Any
+from typing import Any, Dict, List, Optional
 
 from trl.extras.conversation_generator import ConversationGenerator
+
 from .client import AIOpsLabClient
 
 logger = logging.getLogger(__name__)
@@ -24,7 +25,8 @@ class AIOpsLabConversationGenerator(ConversationGenerator):
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
-        self.client = AIOpsLabClient(f"http://{aiopslab_server_host}:{aiopslab_server_port}")
+        self.client = AIOpsLabClient(
+            f"http://{aiopslab_server_host}:{aiopslab_server_port}")
         self.model = model
         self.default_agent = default_agent
         self.default_steps = default_steps
@@ -36,8 +38,6 @@ class AIOpsLabConversationGenerator(ConversationGenerator):
         repetition_penalty: float = 1.0,
         temperature: float = 1.0,
         top_p: float = 1.0,
-        top_k: int = -1,
-        min_p: float = 0.0,
     ) -> List[Dict[str, Any]]:
         """
         Args:
@@ -52,10 +52,6 @@ class AIOpsLabConversationGenerator(ConversationGenerator):
                 Temperature parameter for sampling. Higher values increase diversity.
             top_p (`float`, *optional*, defaults to `1.0`):
                 Top-p sampling parameter.`1.0` means no truncation.
-            top_k (`int`, *optional*, defaults to `-1`):
-                Top-k sampling parameter. `-1` means no truncation.
-            min_p (`float`, *optional*, defaults to `0.0`):
-                Minimum probability for sampling.
 
         Returns (`List[Dict[str, Any]]`):
             One flattened conversation per *requested generation*,
@@ -76,12 +72,11 @@ class AIOpsLabConversationGenerator(ConversationGenerator):
                     repetition_penalty=repetition_penalty,
                     temperature=temperature,
                     top_p=top_p,
-                    top_k=top_k,
-                    min_p=min_p,
                 )
 
                 if response is None:
-                    logger.warning("Simulation failed for problem_id=%s", problem_id)
+                    logger.warning(
+                        "Simulation failed for problem_id=%s", problem_id)
                     continue
                 conversations.append(
                     {
