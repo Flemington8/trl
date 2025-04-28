@@ -1,4 +1,9 @@
 accelerate
 datasets
 rich
+vllm
+wandb
+deepspeed
+peft
+liger_kernel
 transformers>=4.46.0

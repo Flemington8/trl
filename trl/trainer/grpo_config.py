@@ -303,13 +303,6 @@ class GRPOConfig(TrainingArguments):
         },
     )
 
-    conversation_fetcher: Optional[str] = field(
-        default=None,
-        metadata={
-            "help": "The conversation fetcher to use. If `None`, the default conversation fetcher is used."
-        },
-    )
-
     # Parameters that control the training
     learning_rate: float = field(
         default=1e-6,

@@ -669,11 +669,9 @@ class GRPOTrainer(Trainer):
         if self.is_conversation:
             if conversation_generator is None:
                 raise ValueError(
-                    "Conversation fetcher is required when `is_conversation` is set to True. Please provide a "
-                    "conversation fetcher."
+                    "Conversation generator is required when `is_conversation` is set to True. Please provide a "
+                    "conversation generator."
                 )
-            self.conversation_generator = conversation_generator
-            self.conversation_generator.model(model)
 
             if self.accelerator.is_main_process:
                 self.conversation_generator = conversation_generator
@@ -681,9 +679,9 @@ class GRPOTrainer(Trainer):
 
             self._last_loaded_step = -1  # tag to avoid useless loading during grad accumulation
 
-            # When using conversation fetcher, the main process is responsible for loading the model weights. This can cause process
+            # When using conversation generator, the main process is responsible for loading the model weights. This can cause process
             # desynchronization and seems to lead to DeepSpeed hanging during initialization. To prevent this, we
-            # synchronize all processes after conversation fetcher has been fully initialized.
+            # synchronize all processes after conversation generator has been fully initialized.
             self.accelerator.wait_for_everyone()
 
         # Gradient accumulation requires scaled loss. Normally, loss scaling in the parent class depends on whether the
@@ -936,7 +934,10 @@ class GRPOTrainer(Trainer):
                     name = name.replace("modules_to_save.default.", "")
 
                     if self.accelerator.is_main_process:
-                        self.vllm_client.update_named_param(name, param.data)
+                        if not self.is_conversation:
+                            self.vllm_client.update_named_param(name, param.data)
+                        else:
+                            self.conversation_generator.update_named_param(name, param.data)
 
                 # Unmerge adapters while parameters are still gathered
                 self.model.unmerge_adapter()
@@ -946,11 +947,17 @@ class GRPOTrainer(Trainer):
             for name, param in self.model.named_parameters():
                 with gather_if_zero3([param]):
                     if self.accelerator.is_main_process:
-                        self.vllm_client.update_named_param(name, param.data)
+                        if not self.is_conversation:
+                            self.vllm_client.update_named_param(name, param.data)
+                        else:
+                            self.conversation_generator.update_named_param(name, param.data)
 
         # Reset cache on main process
         if self.accelerator.is_main_process:
-            self.vllm_client.reset_prefix_cache()
+            if not self.is_conversation:
+                self.vllm_client.reset_prefix_cache()
+            else:
+                self.conversation_generator.reset_prefix_cache()
 
     @profiling_decorator
     def _prepare_inputs(
@@ -1469,8 +1476,6 @@ class GRPOTrainer(Trainer):
                 top_p=self.top_p,
                 top_k=-1 if self.top_k is None else self.top_k,
                 min_p=0.0 if self.min_p is None else self.min_p,
-                max_tokens=self.max_completion_length,
-                guided_decoding_regex=self.guided_decoding_regex,
             )
         else:
             # TODO: Handle the case where the main process is not generating conversations

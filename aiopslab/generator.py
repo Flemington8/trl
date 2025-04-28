@@ -15,8 +15,8 @@ class AIOpsLabConversationGenerator(ConversationGenerator):
 
     def __init__(
         self,
-        aiopslab_host: str = "localhost",
-        aiopslab_port: int = 8888,
+        aiopslab_server_host: str = "0.0.0.0",
+        aiopslab_server_port: int = 8888,
         model: str = "Qwen/Qwen2.5-Coder-0.5B-Instruct",
         default_agent: str = "vllm",
         default_steps: int = 10,
@@ -24,7 +24,7 @@ class AIOpsLabConversationGenerator(ConversationGenerator):
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
-        self.client = AIOpsLabClient(f"http://{aiopslab_host}:{aiopslab_port}")
+        self.client = AIOpsLabClient(f"http://{aiopslab_server_host}:{aiopslab_server_port}")
         self.model = model
         self.default_agent = default_agent
         self.default_steps = default_steps
@@ -38,16 +38,24 @@ class AIOpsLabConversationGenerator(ConversationGenerator):
         top_p: float = 1.0,
         top_k: int = -1,
         min_p: float = 0.0,
-        max_tokens: int = 16,
-        guided_decoding_regex: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """
         Args:
             inputs (`List[Dict[str, Any]]`):
                 Each item **must** contain at least a `"problem_id"` key. 
                 Optional keys: `"agent_name"`, `"max_steps"`.
-            n, repetition_penalty, temperature, top_p, top_k, min_p, max_tokens,
-            guided_decoding_regex :  Same semantics as the vLLM generator.
+            n (`int`, *optional*, defaults to `1`):
+                Number of conversations to generate for each input.
+            repetition_penalty (`float`, *optional*, defaults to `1.0`):
+                Parameter for repetition penalty. 1.0 means no penalty.
+            temperature (`float`, *optional*, defaults to `1.0`):
+                Temperature parameter for sampling. Higher values increase diversity.
+            top_p (`float`, *optional*, defaults to `1.0`):
+                Top-p sampling parameter.`1.0` means no truncation.
+            top_k (`int`, *optional*, defaults to `-1`):
+                Top-k sampling parameter. `-1` means no truncation.
+            min_p (`float`, *optional*, defaults to `0.0`):
+                Minimum probability for sampling.
 
         Returns (`List[Dict[str, Any]]`):
             One flattened conversation per *requested generation*,
@@ -70,8 +78,6 @@ class AIOpsLabConversationGenerator(ConversationGenerator):
                     top_p=top_p,
                     top_k=top_k,
                     min_p=min_p,
-                    max_tokens=max_tokens,
-                    guided_decoding_regex=guided_decoding_regex,
                 )
 
                 if response is None:

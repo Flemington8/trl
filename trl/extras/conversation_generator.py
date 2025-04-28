@@ -36,11 +36,11 @@ class ConversationGenerator:
     Args:
         host (`str`, *optional*, defaults to `"0.0.0.0"`):
             IP address of the vLLM server.
-        server_port (`int`, *optional*, defaults to `8000`):
+        vllm_server_port (`int`, *optional*, defaults to `8000`):
             Port number of the vLLM server.
         group_port (`int`, *optional*, defaults to `51216`):
             Port number for the weight update group.
-        connection_timeout (`float`, *optional*, defaults to `0.0`):
+        vllm_server_timeout (`float`, *optional*, defaults to `240.0`):
             Total timeout duration in seconds to wait for the server to be up. If the server is not up after the
             timeout, a `ConnectionError` is raised.
 
@@ -72,7 +72,7 @@ class ConversationGenerator:
     """
 
     def __init__(
-        self, vllm_host: str = "0.0.0.0", server_port: int = 8000, group_port: int = 51216, connection_timeout: float = 0.0
+        self, vllm_server_host: str = "0.0.0.0", vllm_server_port: int = 8000, group_port: int = 51216, vllm_server_timeout: float = 240.0
     ):
         if not is_requests_available():
             raise ImportError("requests is not installed. Please install it with `pip install requests`.")
@@ -80,10 +80,10 @@ class ConversationGenerator:
             raise ImportError("vLLM is not installed. Please install it with `pip install vllm`.")
 
         self.session = requests.Session()
-        self.vllm_host = vllm_host
-        self.server_port = server_port
+        self.vllm_server_host = vllm_server_host
+        self.vllm_server_port = vllm_server_port
         self.group_port = group_port
-        self.check_server(connection_timeout)  # check server and fail after timeout
+        self.check_server(vllm_server_timeout)  # check server and fail after timeout
 
     def check_server(self, total_timeout: float = 0.0, retry_interval: float = 2.0):
         """
@@ -96,7 +96,7 @@ class ConversationGenerator:
             total_timeout (`float`, *optional*, defaults to `0.0`):
                 Total timeout duration in seconds.
         """
-        url = f"http://{self.vllm_host}:{self.server_port}/health/"
+        url = f"http://{self.vllm_server_host}:{self.vllm_server_port}/health/"
         start_time = time.time()  # Record the start time
 
         while True:
@@ -107,7 +107,7 @@ class ConversationGenerator:
                 elapsed_time = time.time() - start_time
                 if elapsed_time >= total_timeout:
                     raise ConnectionError(
-                        f"The vLLM server can't be reached at {self.vllm_host}:{self.server_port} after {total_timeout} "
+                        f"The vLLM server can't be reached at {self.vllm_server_host}:{self.vllm_server_port} after {total_timeout} "
                         "seconds. Make sure the server is running by running `trl vllm-serve`."
                     ) from exc
             else:
@@ -129,8 +129,6 @@ class ConversationGenerator:
         top_p: float = 1.0,
         top_k: int = -1,
         min_p: float = 0.0,
-        max_tokens: int = 16,
-        guided_decoding_regex: Optional[str] = None,
     ) -> list[list[int]]:
         """
         Generates model conversations for the provided prompts.
@@ -150,10 +148,6 @@ class ConversationGenerator:
                 Top-k sampling parameter. `-1` means no truncation.
             min_p (`float`, *optional*, defaults to `0.0`):
                 Minimum probability for sampling.
-            max_tokens (`int`, *optional*, defaults to `16`):
-                Maximum number of tokens to generate for each input.
-            guided_decoding_regex (`str` or `None`, *optional*, defaults to `None`):
-                Regular expression to guide the decoding process.
 
         Returns:
             `List[dict[str, str]]`:
@@ -166,7 +160,7 @@ class ConversationGenerator:
         Initializes the weight update group in a distributed setup for model synchronization.
         """
         # Get the world size from the server
-        url = f"http://{self.vllm_host}:{self.server_port}/get_world_size/"
+        url = f"http://{self.vllm_server_host}:{self.vllm_server_port}/get_world_size/"
         response = requests.get(url)
         if response.status_code == 200:
             vllm_world_size = response.json()["world_size"]
@@ -177,7 +171,7 @@ class ConversationGenerator:
         self.rank = vllm_world_size  # the client's rank is the last process
 
         # Initialize weight update group
-        url = f"http://{self.vllm_host}:{self.server_port}/init_communicator/"
+        url = f"http://{self.vllm_server_host}:{self.vllm_server_port}/init_communicator/"
         # In the server side, the host is set to 0.0.0.0
         response = self.session.post(url, json={"host": "0.0.0.0", "port": self.group_port, "world_size": world_size})
         if response.status_code != 200:
@@ -189,7 +183,7 @@ class ConversationGenerator:
         time.sleep(0.1)
 
         # Set up the communication group for weight broadcasting
-        pg = StatelessProcessGroup.create(host=self.vllm_host, port=self.group_port, rank=self.rank, world_size=world_size)
+        pg = StatelessProcessGroup.create(host=self.vllm_server_host, port=self.group_port, rank=self.rank, world_size=world_size)
         self.pynccl_comm = PyNcclCommunicator(pg, device=0)
 
         # When the client object is deleted, close the weight update group
@@ -206,7 +200,7 @@ class ConversationGenerator:
                 Tensor containing the updated weights.
         """
         dtype, shape = str(weights.dtype), tuple(weights.shape)
-        url = f"http://{self.vllm_host}:{self.server_port}/update_named_param/"
+        url = f"http://{self.vllm_server_host}:{self.vllm_server_port}/update_named_param/"
         response = self.session.post(url, json={"name": name, "dtype": dtype, "shape": shape})
         if response.status_code != 200:
             raise Exception(f"Request failed: {response.status_code}, {response.text}")
@@ -231,7 +225,7 @@ class ConversationGenerator:
         """
         Resets the prefix cache for the model.
         """
-        url = f"http://{self.vllm_host}:{self.server_port}/reset_prefix_cache/"
+        url = f"http://{self.vllm_server_host}:{self.vllm_server_port}/reset_prefix_cache/"
         response = self.session.post(url)
         if response.status_code != 200:
             raise Exception(f"Request failed: {response.status_code}, {response.text}")
@@ -240,7 +234,7 @@ class ConversationGenerator:
         """
         Closes the weight update group and cleans up the communication group.
         """
-        url = f"http://{self.vllm_host}:{self.server_port}/close_communicator/"
+        url = f"http://{self.vllm_server_host}:{self.vllm_server_port}/close_communicator/"
 
         try:
             response = self.session.post(url)

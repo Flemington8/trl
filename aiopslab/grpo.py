@@ -216,6 +216,14 @@ peft_config = LoraConfig(
     modules_to_save=[],       # Don't fully save any modules
 )
 
+conversation_generator = AIOpsLabConversationGenerator(
+    vllm_server_host="0.0.0.0",
+    vllm_server_port=8000,
+    vllm_server_timeout=240.0,
+    aiopslab_server_host="localhost",
+    aiopslab_server_port=8888, 
+    model="Qwen/Qwen2.5-Coder-0.5B-Instruct")
+
 # Use both task-specific reward functions
 trainer = GRPOTrainer(
     model="Qwen/Qwen2.5-Coder-0.5B-Instruct",
@@ -223,9 +231,10 @@ trainer = GRPOTrainer(
     train_dataset=dataset,
     args=training_args,
     peft_config=peft_config,
+    conversation_generator=conversation_generator,
 )
 
-trainer.conversation_generator = AIOpsLabConversationGenerator(
-        base_url="http://localhost:8888")
-
 trainer.train()
+
+# python -m trl.scripts.vllm_serve --model Qwen/Qwen2.5-Coder-0.5B-Instruct --dtype float16 --gpu_memory_utilization 0.6
+# accelerate launch --config_file aiopslab/accelerate_configs/deepspeed_zero2.yaml aiopslab/grpo.py

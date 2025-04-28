@@ -21,6 +21,7 @@ def reward_len(completions, **kwargs):
 training_args = GRPOConfig(output_dir="./output/Qwen2.5-Coder-0.5B-Instruct-GRPO",
                         beta=0.0,
                         fp16=True,
+                        use_vllm=True,
                         per_device_train_batch_size=1,
                         gradient_accumulation_steps=8,
                         max_prompt_length=128,
