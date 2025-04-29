@@ -1,8 +1,9 @@
 from datasets import Dataset
-from trl.trainer import GRPOConfig, GRPOTrainer
 from peft import LoraConfig
-from aiopslab.rewards import format_reward
+
 from aiopslab.generator import AIOpsLabConversationGenerator
+from aiopslab.rewards import format_reward
+from trl.trainer import GRPOConfig, GRPOTrainer
 
 dataset = Dataset.from_list([
     {"problem_id": "k8s_target_port-misconfig-detection-1", "task": "detection"},
@@ -17,12 +18,12 @@ dataset = Dataset.from_list([
     {"problem_id": "k8s_target_port-misconfig-localization-3", "task": "localization"},
     {"problem_id": "k8s_target_port-misconfig-analysis-3", "task": "analysis"},
     {"problem_id": "k8s_target_port-misconfig-mitigation-3", "task": "mitigation"},
-    
+
     {"problem_id": "auth_miss_mongodb-detection-1", "task": "detection"},
     {"problem_id": "auth_miss_mongodb-localization-1", "task": "localization"},
     {"problem_id": "auth_miss_mongodb-analysis-1", "task": "analysis"},
     {"problem_id": "auth_miss_mongodb-mitigation-1", "task": "mitigation"},
-    
+
     {"problem_id": "revoke_auth_mongodb-detection-1", "task": "detection"},
     {"problem_id": "revoke_auth_mongodb-localization-1", "task": "localization"},
     {"problem_id": "revoke_auth_mongodb-analysis-1", "task": "analysis"},
@@ -31,7 +32,7 @@ dataset = Dataset.from_list([
     {"problem_id": "revoke_auth_mongodb-localization-2", "task": "localization"},
     {"problem_id": "revoke_auth_mongodb-analysis-2", "task": "analysis"},
     {"problem_id": "revoke_auth_mongodb-mitigation-2", "task": "mitigation"},
-    
+
     {"problem_id": "user_unregistered_mongodb-detection-1", "task": "detection"},
     {"problem_id": "user_unregistered_mongodb-localization-1", "task": "localization"},
     {"problem_id": "user_unregistered_mongodb-analysis-1", "task": "analysis"},
@@ -40,12 +41,12 @@ dataset = Dataset.from_list([
     {"problem_id": "user_unregistered_mongodb-localization-2", "task": "localization"},
     {"problem_id": "user_unregistered_mongodb-analysis-2", "task": "analysis"},
     {"problem_id": "user_unregistered_mongodb-mitigation-2", "task": "mitigation"},
-    
+
     {"problem_id": "misconfig_app_hotel_res-detection-1", "task": "detection"},
     {"problem_id": "misconfig_app_hotel_res-localization-1", "task": "localization"},
     {"problem_id": "misconfig_app_hotel_res-analysis-1", "task": "analysis"},
     {"problem_id": "misconfig_app_hotel_res-mitigation-1", "task": "mitigation"},
-    
+
     {"problem_id": "scale_pod_zero_social_net-detection-1", "task": "detection"},
     {"problem_id": "scale_pod_zero_social_net-localization-1", "task": "localization"},
     {"problem_id": "scale_pod_zero_social_net-analysis-1", "task": "analysis"},
@@ -58,23 +59,23 @@ dataset = Dataset.from_list([
     
     {"problem_id": "container_kill-detection", "task": "detection"},
     {"problem_id": "container_kill-localization", "task": "localization"},
-    
+
     {"problem_id": "pod_failure_hotel_res-detection-1", "task": "detection"},
     {"problem_id": "pod_failure_hotel_res-localization-1", "task": "localization"},
-    
+
     {"problem_id": "pod_kill_hotel_res-detection-1", "task": "detection"},
     {"problem_id": "pod_kill_hotel_res-localization-1", "task": "localization"},
-    
+
     {"problem_id": "network_loss_hotel_res-detection-1", "task": "detection"},
     {"problem_id": "network_loss_hotel_res-localization-1", "task": "localization"},
-    
+
     {"problem_id": "network_delay_hotel_res-detection-1", "task": "detection"},
     {"problem_id": "network_delay_hotel_res-localization-1", "task": "localization"},
-    
+
     {"problem_id": "noop_detection_hotel_reservation-1", "task": "detection"},
     {"problem_id": "noop_detection_social_network-1", "task": "detection"},
     {"problem_id": "noop_detection_astronomy_shop-1", "task": "detection"},
-    
+
     {"problem_id": "astronomy_shop_ad_service_failure-detection-1", "task": "detection"},
     {"problem_id": "astronomy_shop_ad_service_failure-localization-1", "task": "localization"},
     {"problem_id": "astronomy_shop_ad_service_high_cpu-detection-1", "task": "detection"},
@@ -105,99 +106,21 @@ dataset = Dataset.from_list([
     {"problem_id": "redeploy_without_PV-detection-1", "task": "detection"},
     {"problem_id": "redeploy_without_PV-analysis-1", "task": "analysis"},
     {"problem_id": "redeploy_without_PV-mitigation-1", "task": "mitigation"},
-    
+
     {"problem_id": "wrong_bin_usage-detection-1", "task": "detection"},
     {"problem_id": "wrong_bin_usage-localization-1", "task": "localization"},
     {"problem_id": "wrong_bin_usage-analysis-1", "task": "analysis"},
     {"problem_id": "wrong_bin_usage-mitigation-1", "task": "mitigation"}
 ])
 
-conversation_0 = {
-    "messages":[
-    {
-        "role": "user",
-        "content": "```\nsubmit(\"Yes\")\n```"
-    },
-    {
-        "role": "assistant",
-        "content": "```\nsubmit(\"Yes\")\n```"
-    },
-    {
-        "role": "user",
-        "content": "tidb-cluster             Active   20h\n"
-    },
-    {
-        "role": "assistant",
-        "content": "```\nexec_shell(\"kubectl get statefulsets -n tidb-cluster\")\n```"
-    },
-    {
-        "role": "user",
-        "content": ""
-    },
-    {
-        "role": "assistant",
-        "content": "```\nsubmit(\"Yes\")\n```"
-    },
-        {
-        "role": "user",
-        "content": "```\nsubmit(\"Yes\")\n```"
-    },
-    {
-        "role": "assistant",
-        "content": "```\nexec_shell(\"kubectl get statefulsets -n tidb-cluster\")\n```"
-    },
-        {
-        "role": "user",
-        "content": "```\nsubmit(\"Yes\")\n```"
-    },
-    {
-        "role": "assistant",
-        "content": "```\nexec_shell(\"kubectl get statefulsets -n tidb-cluster\")\n```"
-    },
-        {
-        "role": "user",
-        "content": "```\nsubmit(\"Yes\")\n```"
-    },
-    {
-        "role": "assistant",
-        "content": "```\nexec_shell(\"kubectl get statefulsets -n tidb-cluster\")\n```"
-    },
-]
-}
-
-# conversation_1 = {
-#     "messages":[
-#     {
-#         "role": "user",
-#         "content": "```\nsubmit(\"Yes\")\n```"
-#     },
-#     {
-#         "role": "assistant",
-#         "content": "```\nexec_shell(\"kubectl get statefulsets -n tidb-cluster\")\n```"
-#     },
-#     {
-#         "role": "user",
-#         "content": "```\nsubmit(\"Yes\")\n```"
-#     },
-#     {
-#         "role": "assistant",
-#         "content": "```\nsubmit(\"Yes\")\n```"
-#     },
-# ]
-# }
-
-# conversations = [conversation_0] + [conversation_1 for _ in range(100)]
-
-# dataset = Dataset.from_list(conversations)
-
 training_args = GRPOConfig(output_dir="./output/Qwen2.5-Coder-0.5B-Instruct-GRPO",
-                        num_generations=4,
-                        beta=0.0,
-                        fp16=True,
-                        per_device_train_batch_size=1,
-                        gradient_accumulation_steps=8,
-                        is_conversation=True,
-                        report_to=[])
+                           num_generations=4,
+                           beta=0.0,
+                           fp16=True,
+                           per_device_train_batch_size=1,
+                           gradient_accumulation_steps=8,
+                           is_conversation=True,
+                           report_to=[])
 
 peft_config = LoraConfig(
     r=8,
@@ -207,9 +130,9 @@ peft_config = LoraConfig(
     task_type="CAUSAL_LM",    # Task type for the model
     # Target specific attention modules in Qwen2.5 architecture
     target_modules=[
-        "q_proj", 
-        "k_proj", 
-        "v_proj", 
+        "q_proj",
+        "k_proj",
+        "v_proj",
         "o_proj"
     ],
     # Additional memory-saving options
@@ -222,7 +145,7 @@ conversation_generator = AIOpsLabConversationGenerator(
     vllm_server_port=8000,
     vllm_server_timeout=240.0,
     aiopslab_server_host="localhost",
-    aiopslab_server_port=8888, 
+    aiopslab_server_port=8888,
     model="Qwen/Qwen2.5-Coder-0.5B-Instruct")
 
 # Use both task-specific reward functions
@@ -236,6 +159,3 @@ trainer = GRPOTrainer(
 )
 
 trainer.train()
-
-# CUDA_VISIBLE_DEVICES=0 python -m trl.scripts.vllm_serve --model Qwen/Qwen2.5-Coder-0.5B-Instruct --dtype float16 --gpu_memory_utilization 0.6
-# CUDA_VISIBLE_DEVICES=1,2 accelerate launch --config_file aiopslab/accelerate_configs/deepspeed_zero2.yaml aiopslab/grpo.py
