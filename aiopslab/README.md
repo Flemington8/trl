@@ -68,7 +68,7 @@ pip install trl
 Start the vLLM server to handle model inference:
 
 ```bash
-CUDA_VISIBLE_DEVICES=0 python -m trl.scripts.vllm_serve --model Qwen/Qwen2.5-Coder-0.5B-Instruct 
+CUDA_VISIBLE_DEVICES=0 python -m trl.scripts.vllm_serve --model Qwen/Qwen2.5-Coder-1.5B-Instruct --gpu_memory_utilization 0.5
 ```
 
 ### Training with GRPO
