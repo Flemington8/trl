@@ -1,8 +1,8 @@
 import logging
 from typing import Any, Dict, List
+import json
 
 from trl.extras.conversation_generator import ConversationGenerator
-
 from .client import AIOpsLabClient
 
 logger = logging.getLogger(__name__)
@@ -93,15 +93,16 @@ class AIOpsLabConversationGenerator(ConversationGenerator):
                     logger.warning(
                         "Simulation failed for problem_id=%s", problem_id)
                     continue
-                conversations.append(
-                    {
-                        "agent": response["agent"],
-                        "task": spec["task"],
-                        "problem_id": response["problem_id"],
-                        "messages": self._convert_trace_roles(response["trace"]),
-                        "results": response["results"],
+                conversation = {
+                    "agent": response["agent"],
+                    "task": spec["task"],
+                    "problem_id": response["problem_id"],
+                    "messages": self._convert_trace_roles(response["trace"]),
+                    "result": response["results"],
                     }
-                )
+                conversations.append(conversation)
+                with open("./aiopslab/data/conversation.json", "w", encoding="utf-8") as f:
+                    json.dump(conversation, f, ensure_ascii=False, indent=4)
                 logger.info(
                     "Simulation completed for problem_id=%s, agent=%s",
                     problem_id,
