@@ -31,6 +31,21 @@ class AIOpsLabConversationGenerator(ConversationGenerator):
         self.default_agent = default_agent
         self.default_steps = default_steps
 
+    def _convert_trace_roles(self, trace):
+        """
+        Convert 'env' roles to 'user' roles for GRPO compatibility.
+        """
+        converted_trace = []
+        
+        for message in trace:
+            # Convert env role to user role
+            if message["role"] == "env":
+                converted_trace.append({"role": "user", "content": message["content"]})
+            else:
+                converted_trace.append({"role": "assistant", "content": message["content"]})
+                
+        return converted_trace
+
     def generate(
         self,
         inputs: List[Dict[str, Any]],
@@ -83,7 +98,7 @@ class AIOpsLabConversationGenerator(ConversationGenerator):
                         "agent": response["agent"],
                         "task": spec["task"],
                         "problem_id": response["problem_id"],
-                        "messages": response["trace"],
+                        "messages": self._convert_trace_roles(response["trace"]),
                         "results": response["results"],
                     }
                 )
