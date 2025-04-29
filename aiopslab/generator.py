@@ -81,7 +81,7 @@ class AIOpsLabConversationGenerator(ConversationGenerator):
                 conversations.append(
                     {
                         "agent": response["agent"],
-                        "task": inputs["task"],
+                        "task": spec["task"],
                         "problem_id": response["problem_id"],
                         "messages": response["trace"],
                         "results": response["results"],
