@@ -508,7 +508,7 @@ def main(script_args: ScriptArguments):
         # Create sampling parameters from request
         sampling_params = SamplingParams(
             n=request.n if request.n is not None else 1,
-            max_tokens=request.max_tokens if request.max_tokens is not None else 16,
+            max_tokens=request.max_tokens if request.max_tokens is not None else 1024,
             temperature=request.temperature if request.temperature is not None else 1.0,
             top_p=request.top_p if request.top_p is not None else 1.0,
             presence_penalty=request.presence_penalty if request.presence_penalty is not None else 0.0,
