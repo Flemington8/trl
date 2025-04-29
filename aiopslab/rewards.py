@@ -97,7 +97,7 @@ def analysis_eval(result):
     # Check Time to Resolution (TTR) for speed
     TTR_threshold = 30  # Define threshold for fast analysis
     TTR_penalty = 0.0
-    if result["TTR"] > TTR_threshold:
+    if result["TTA"] > TTR_threshold:
         TTR_penalty = -0.5  # Penalty for slow resolution time
 
     # If system-level analysis is correct, reward, else penalize
