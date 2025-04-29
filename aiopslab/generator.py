@@ -1,5 +1,5 @@
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 from trl.extras.conversation_generator import ConversationGenerator
 

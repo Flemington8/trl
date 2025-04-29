@@ -1,5 +1,4 @@
 import json
-from typing import Optional
 
 import requests
 
@@ -51,8 +50,6 @@ class AIOpsLabClient:
                 "agent": "Qwen2.5-Coder-3B-Instruct",
                 "session_id": "1234567890",
                 "problem_id": "misconfig_app_hotel_res-mitigation-1",
-                "start_time": 1743008569.2835402,
-                "end_time": 1743008569.493365,
                 "results": {
                     "Localization Accuracy": 0.0,
                     "success": false,
