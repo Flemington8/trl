@@ -1286,11 +1286,12 @@ class GRPOTrainer(Trainer):
                 [
                     {
                         "messages": [
-                            {"role": "user", "content": "Hello"},
+                            {"role": "system", "content": "You are a helpful assistant!"},
+                            {"role": "user", "content": "Hello!"},
                             {"role": "assistant", "content": "Hi there!"},
                             {"role": "user", "content": "How are you?"},
-                            {"role": "assistant", "content": "I'm doing well!"}
                             # ... more turns
+                            {"role": "assistant", "content": "I'm doing well!"}
                         ],
                         # Optional metadata fields
                         "problem_id": "k8s_target_port-misconfig-detection-1",
@@ -1309,8 +1310,8 @@ class GRPOTrainer(Trainer):
         device = self.accelerator.device
         
         # Find the maximum number of turns across all conversations
-        max_turns = max(len([m for m in conv["messages"] if m["role"] == "assistant"]) 
-                    for conv in inputs)
+        max_turns = max(len([message for message in spec["messages"] if message["role"] == "assistant"]) 
+                    for spec in inputs)
         
         # Process each conversation, separating by turns
         all_prompt_texts_by_turn = [[] for _ in range(max_turns)]
@@ -1321,32 +1322,40 @@ class GRPOTrainer(Trainer):
         
         for conv_idx, conversation in enumerate(inputs):
             messages = conversation["messages"]
-            user_messages = [msg for msg in messages if msg["role"] == "user" or msg["role"] == "system"]
-            assistant_messages = [msg for msg in messages if msg["role"] == "assistant"]
             
-            for turn_idx in range(min(len(assistant_messages), max_turns)):
+            # Group messages into turns
+            turns = []
+            current_prompt = []
+            
+            # Process messages to group them into prompt-completion pairs
+            for message in messages:
+                if message["role"] == "assistant":
+                    turns.append((current_prompt, [message]))
+                    current_prompt = []
+                else:
+                    # User or system messages form the prompt
+                    current_prompt.append(message)
+                
+            for turn_idx in range(min(len(turns), max_turns)):
                 # Mark this turn as present
                 turn_presence[conv_idx, turn_idx] = True
                 
-                # Current prompt for this turn
-                prompt = [user_messages[turn_idx]] # list[dict[str, str]]
-
-                # Current completion for this turn
-                completion = [assistant_messages[turn_idx]]
+                # Get prompt and completion for this turn
+                prompt, completion = turns[turn_idx]
                 
                 # Apply chat template
-                prompt_dict = {"messages": [prompt[0]]}
-                completion_dict = {"messages": [completion[0]]}
+                prompt_dict = {"messages": prompt}
+                completion_dict = {"messages": completion}
                 
                 prompt_text = maybe_apply_chat_template(prompt_dict, self.processing_class)["text"]
                 completion_text = maybe_apply_chat_template(completion_dict, self.processing_class)["text"]
                 
                 # Add to the appropriate turn lists
-                all_prompt_texts_by_turn[turn_idx].append(prompt_text) # all_prompt_texts_by_turn[turn_idx] -> list[str]
+                all_prompt_texts_by_turn[turn_idx].append(prompt_text)
                 all_completion_texts_by_turn[turn_idx].append(completion_text)
             
             # For remaining turns that this conversation doesn't have, add empty placeholders
-            for turn_idx in range(len(assistant_messages), max_turns):
+            for turn_idx in range(len(turns), max_turns):
                 # Add empty strings as placeholders
                 all_prompt_texts_by_turn[turn_idx].append("")
                 all_completion_texts_by_turn[turn_idx].append("")
