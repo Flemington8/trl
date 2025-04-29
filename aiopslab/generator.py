@@ -42,7 +42,7 @@ class AIOpsLabConversationGenerator(ConversationGenerator):
             if message["role"] == "env":
                 converted_trace.append({"role": "user", "content": message["content"]})
             else:
-                converted_trace.append({"role": "assistant", "content": message["content"]})
+                converted_trace.append({"role": message["role"], "content": message["content"]})
                 
         return converted_trace
 
