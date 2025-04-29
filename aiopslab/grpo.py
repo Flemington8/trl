@@ -113,13 +113,21 @@ dataset = Dataset.from_list([
     {"problem_id": "wrong_bin_usage-mitigation-1", "task": "mitigation"}
 ])
 
-training_args = GRPOConfig(output_dir="./output/Qwen2.5-Coder-0.5B-Instruct-GRPO",
-                           num_generations=4,
+training_args = GRPOConfig(num_train_epochs=1,
+                           max_completion_length=1024,
+                           temperature=1.0,
+                           top_p=0.95,
+                           # GRPO-specific parameters
+                           num_generations=2,
+                           num_iterations=1,
                            beta=0.0,
+                           epsilon=0.2,
+                           # Training parameters
                            fp16=True,
                            per_device_train_batch_size=1,
-                           gradient_accumulation_steps=8,
+                           gradient_accumulation_steps=2,
                            is_conversation=True,
+                           output_dir="./output/Qwen2.5-Coder-0.5B-Instruct-GRPO",
                            report_to=[])
 
 peft_config = LoraConfig(
