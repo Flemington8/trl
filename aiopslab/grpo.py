@@ -154,11 +154,11 @@ conversation_generator = AIOpsLabConversationGenerator(
     vllm_server_timeout=240.0,
     aiopslab_server_host="localhost",
     aiopslab_server_port=8888,
-    model="Qwen/Qwen2.5-Coder-1.5B-Instruct")
+    model="Qwen/Qwen2.5-Coder-0.5B-Instruct")
 
 # Use both task-specific reward functions
 trainer = GRPOTrainer(
-    model="Qwen/Qwen2.5-Coder-1.5B-Instruct",
+    model="Qwen/Qwen2.5-Coder-0.5B-Instruct",
     reward_funcs=format_reward,
     train_dataset=dataset,
     args=training_args,
