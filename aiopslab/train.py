@@ -136,8 +136,10 @@ training_args = GRPOConfig(num_train_epochs=2,
                            per_device_train_batch_size=1,
                            gradient_accumulation_steps=2,
                            is_conversation=True,
-                           output_dir=f"./results/Qwen2.5-Coder-0.5B-Instruct-GRPO--AIOpsLab{current_time}",
-                           report_to=["wandb"])
+                           output_dir=f"./results/Qwen2.5-Coder-0.5B-Instruct-GRPO-AIOpsLab-{current_time}",
+                           report_to=["wandb"],
+                           run_name=run_name
+                           )
 
 peft_config = LoraConfig(
     r=8,
