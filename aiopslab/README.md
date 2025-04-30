@@ -76,7 +76,7 @@ CUDA_VISIBLE_DEVICES=0 python -m trl.scripts.vllm_serve --model Qwen/Qwen2.5-Cod
 Run the GRPO training script with DeepSpeed:
 
 ```bash
-CUDA_VISIBLE_DEVICES=1 accelerate launch --config_file aiopslab/accelerate_configs/deepspeed_zero2.yaml aiopslab/grpo.py
+CUDA_VISIBLE_DEVICES=1 accelerate launch --config_file aiopslab/accelerate_configs/deepspeed_zero2.yaml aiopslab/train.py
 ```
 
 ## Model Configuration

@@ -5,6 +5,9 @@ from aiopslab.generator import AIOpsLabConversationGenerator
 from aiopslab.rewards import format_reward, result_reward
 from trl.trainer import GRPOConfig, GRPOTrainer
 
+from dotenv import load_dotenv
+from datetime import datetime
+
 dataset = Dataset.from_list([
     {"problem_id": "k8s_target_port-misconfig-detection-1", "task": "detection"},
     {"problem_id": "k8s_target_port-misconfig-localization-1", "task": "localization"},
@@ -113,6 +116,12 @@ dataset = Dataset.from_list([
     # {"problem_id": "wrong_bin_usage-mitigation-1", "task": "mitigation"}
 ])
 
+# Load environment variables from .env file
+load_dotenv()
+
+current_time = datetime.now().strftime("%m%d_%H%M")
+run_name = f"Qwen2.5-Coder-0.5B-Instruct-GRPO-AIOpsLab-{current_time}"
+
 training_args = GRPOConfig(num_train_epochs=2,
                            max_completion_length=1024,
                            temperature=1.0,
@@ -120,15 +129,15 @@ training_args = GRPOConfig(num_train_epochs=2,
                            # GRPO-specific parameters
                            num_generations=2,
                            num_iterations=1,
-                           beta=0.0,
+                           beta=0.2,
                            epsilon=0.2,
                            # Training parameters
                            fp16=True,
                            per_device_train_batch_size=1,
                            gradient_accumulation_steps=2,
                            is_conversation=True,
-                           output_dir="./output/Qwen2.5-Coder-0.5B-Instruct-GRPO",
-                           report_to=[])
+                           output_dir=f"./results/Qwen2.5-Coder-0.5B-Instruct-GRPO--AIOpsLab{current_time}",
+                           report_to=["wandb"])
 
 peft_config = LoraConfig(
     r=8,
