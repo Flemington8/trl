@@ -1,6 +1,8 @@
 from datasets import load_dataset
 from trl.trainer import GRPOConfig, GRPOTrainer
 from peft import LoraConfig
+from dotenv import load_dotenv
+from datetime import datetime
 
 dataset = load_dataset("trl-lib/tldr", split="train")
 
@@ -18,15 +20,22 @@ def reward_len(completions, **kwargs):
     """
     return [-abs(20 - len(completion)) for completion in completions]
 
-training_args = GRPOConfig(output_dir="./output/Qwen2.5-Coder-0.5B-Instruct-GRPO",
-                        beta=0.0,
+# Load environment variables from .env file
+load_dotenv()
+
+current_time = datetime.now().strftime("%m%d_%H%M")
+run_name = f"Qwen2.5-Coder-0.5B-Instruct-GRPO-AIOpsLab-{current_time}"
+
+training_args = GRPOConfig(output_dir=f"./results/Qwen2.5-Coder-0.5B-Instruct-GRPO--AIOpsLab{current_time}",
+                        run_name=run_name,
+                        beta=0.2,
                         fp16=True,
-                        use_vllm=True,
+                        use_vllm=False,
                         per_device_train_batch_size=1,
                         gradient_accumulation_steps=8,
                         max_prompt_length=128,
                         max_completion_length=64,
-                        report_to=[])
+                        report_to=["wandb"])
 
 peft_config = LoraConfig(
     r=8,
