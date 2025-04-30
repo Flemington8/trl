@@ -1,6 +1,8 @@
 import re
 from typing import Union, Any
 
+MAX_STEPS = 10.0
+
 def format_reward(conversations: list[dict[str, Union[str, Any]]], **kwargs):
     """
     Reward function that evaluates conversations based on the format correctness
@@ -57,66 +59,90 @@ def detection_eval(result):
     else:
         detection_correct = False
 
-    # Check the detection time (TTD) is within acceptable limits
-    TTD_threshold = 100  # Define threshold for fast detection
-    TTD_penalty = 0.0
-    if result["TTD"] > TTD_threshold:
-        TTD_penalty = -0.5  # Penalty for long detection time
+    TTD_reward = 0.0
+    steps_reward = 0.0
+
+    if detection_correct:
+        # Check the detection time (TTD) is within acceptable limits
+        TTD_threshold = 50  # Define threshold for fast detection
+        if result["TTD"] < TTD_threshold:
+            TTD_reward = 0.5  # Reward for short detection time
+        
+        # Check the number of steps taken
+        steps_reward = (MAX_STEPS - float(result["steps"])) / MAX_STEPS
 
     # If detection is correct, reward, else penalize
     reward = 1.0 if detection_correct else -1.0
-    return reward + TTD_penalty
+    return (reward + TTD_reward + steps_reward) * 10.0
 
 def localization_eval(result):
     # Check the localization accuracy
-    if result["Localization Accuracy"] > 0.5:  # Customize this threshold based on your task's requirement
-        localization_correct = True
-    else:
-        localization_correct = False
+    localization_correct = result["success"]
 
-    # Check the localization time (TTL) is within acceptable limits
-    TTL_threshold = 20  # Define threshold for fast localization
-    TTL_penalty = 0.0
-    if result["TTL"] > TTL_threshold:
-        TTL_penalty = -0.5  # Penalty for long localization time
+    TTL_reward = 0.0
+    steps_reward = 0.0
 
-    # If localization is correct, reward, else penalize
-    reward = 1.0 if localization_correct else -1.0
-    return reward + TTL_penalty
+    if localization_correct:
+        # Check the localization time (TTL)
+        TTL_threshold = 40  # Define threshold for fast localization
+        if result["TTL"] < TTL_threshold:
+            TTL_reward = 0.5  # Reward for short localization time
+        
+        # Reward fewer steps (just like in detection_eval)
+        steps_reward = (MAX_STEPS - float(result["steps"])) / MAX_STEPS
+
+    accuracy_upbound = 100.0
+    # Base reward based on correctness
+    reward = (result["Localization Accuracy"] - accuracy_upbound) / accuracy_upbound
+    return (reward + TTL_reward + steps_reward) * 10.0
 
 def analysis_eval(result):
     # Check if system-level analysis is correct
     system_level_correct = result["system_level_correct"]
     fault_type_correct = result["fault_type_correct"]
     
-    # Penalty for incorrect fault type
-    penalty = 0.0
-    if not fault_type_correct:
-        penalty = -0.5  # Penalty for incorrect fault type
-
-    # Check Time to Resolution (TTR) for speed
-    TTR_threshold = 30  # Define threshold for fast analysis
-    TTR_penalty = 0.0
-    if result["TTA"] > TTR_threshold:
-        TTR_penalty = -0.5  # Penalty for slow resolution time
-
-    # If system-level analysis is correct, reward, else penalize
+    # Determine overall correctness
+    analysis_correct = system_level_correct and fault_type_correct
+    
+    TTA_reward = 0.0
+    steps_reward = 0.0
+    
+    if analysis_correct:
+        # Check Time to Analysis (TTA)
+        TTA_threshold = 40
+        if result["TTA"] < TTA_threshold:
+            TTA_reward = 0.5  # Reward for quick analysis
+            
+        # Reward fewer steps
+        steps_reward = (MAX_STEPS - float(result["steps"])) / MAX_STEPS
+    
+    # Base reward based on system-level analysis correctness
     reward = 1.0 if system_level_correct else -1.0
-    return reward + penalty + TTR_penalty
+    
+    # Penalty for incorrect fault type (only if system analysis was correct)
+    fault_type_penalty = -0.5 if (system_level_correct and not fault_type_correct) else 0.0
+    
+    return (reward + fault_type_penalty + TTA_reward + steps_reward) * 10.0
 
 def mitigation_eval(result):
     # Check if mitigation was successful
-    success = result["success"]
-
-    # Check Time to Mitigation (TTM) for speed
-    TTM_threshold = 20  # Define threshold for fast mitigation
-    TTM_penalty = 0.0
-    if result["TTM"] > TTM_threshold:
-        TTM_penalty = -0.5  # Penalty for slow mitigation
-
-    # Reward for success, otherwise penalize
-    reward = 1.0 if success else -1.0
-    return reward + TTM_penalty
+    mitigation_correct = result["success"]
+    
+    TTM_reward = 0.0
+    steps_reward = 0.0
+    
+    if mitigation_correct:
+        # Check Time to Mitigation (TTM)
+        TTM_threshold = 100
+        if result["TTM"] < TTM_threshold:
+            TTM_reward = 0.5  # Reward for fast mitigation
+        
+        # Reward fewer steps
+        steps_reward = (MAX_STEPS - float(result["steps"])) / MAX_STEPS
+    
+    # Base reward based on success
+    reward = 1.0 if mitigation_correct else -1.0
+    return (reward + TTM_reward + steps_reward) * 10.0
 
 def result_reward(conversations: list[dict[str, Union[str, Any]]], **kwargs):
     """
@@ -151,10 +177,6 @@ def result_reward(conversations: list[dict[str, Union[str, Any]]], **kwargs):
             rewards.append(reward)
 
     return rewards
-
-# TODO: Integrate step reward to result_reward
-def step_reward(conversations: list[dict[str, Union[str, Any]]], **kwargs):
-    pass
 
 if __name__ == "__main__":
     conversations = [
