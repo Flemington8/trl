@@ -1515,6 +1515,20 @@ class GRPOTrainer(Trainer):
                 ) # shape (batch_size, logits_to_keep)
             else:
                 old_per_token_logps = None
+            
+            # Calculate reference model log probabilities if needed (beta > 0)
+            if self.beta == 0.0:
+                ref_per_token_logps = None
+            elif self.ref_model is not None:
+                ref_per_token_logps = self._get_per_token_logps(
+                    self.ref_model, conversation_ids, attention_mask, logits_to_keep_mask, batch_size
+                )
+            else:
+                # If PEFT is used, disable adapter to get reference model probabilities
+                with self.accelerator.unwrap_model(self.model).disable_adapter():
+                    ref_per_token_logps = self._get_per_token_logps(
+                        self.model, conversation_ids, attention_mask, logits_to_keep_mask, batch_size
+                    )
 
         rewards_per_func = torch.zeros(len(conversations), len(self.reward_funcs), device=device)
         for i, (reward_func, reward_processing_class, reward_func_name) in enumerate(
@@ -1562,7 +1576,7 @@ class GRPOTrainer(Trainer):
             "completion_mask": completion_mask,
             "advantages": advantages,
             "old_per_token_logps": old_per_token_logps,
-            "ref_per_token_logps": None,
+            "ref_per_token_logps": ref_per_token_logps,
         }
 
     def compute_liger_loss(self, model, inputs):
@@ -1710,30 +1724,30 @@ class GRPOTrainer(Trainer):
             else:
                 raise ValueError(f"Unknown loss type: {self.loss_type}")
 
-            # # Log the metrics
-            # mode = "eval" if self.control.should_evaluate else "train"
+            # Log the metrics
+            mode = "eval" if self.control.should_evaluate else "train"
 
-            # if self.beta != 0.0:
-            #     mean_kl = (per_token_kl * completion_mask).sum() / completion_mask.sum()
-            #     self._metrics[mode]["kl"].append(self.accelerator.gather_for_metrics(mean_kl).nanmean().item())
+            if self.beta != 0.0:
+                mean_kl = (per_token_kl * completion_mask).sum() / completion_mask.sum()
+                self._metrics[mode]["kl"].append(self.accelerator.gather_for_metrics(mean_kl).nanmean().item())
 
-            # # Compute the clipped probability ratios
-            # is_low_clipped = (coef_1 < 1 - self.epsilon_low) & (advantages.unsqueeze(1) < 0)
-            # is_high_clipped = (coef_1 > 1 + self.epsilon_high) & (advantages.unsqueeze(1) > 0)
-            # is_region_clipped = is_low_clipped | is_high_clipped
+            # Compute the clipped probability ratios
+            is_low_clipped = (coef_1 < 1 - self.epsilon_low) & (advantages.unsqueeze(1) < 0)
+            is_high_clipped = (coef_1 > 1 + self.epsilon_high) & (advantages.unsqueeze(1) > 0)
+            is_region_clipped = is_low_clipped | is_high_clipped
 
-            # low_clip = (is_low_clipped * completion_mask).sum() / completion_mask.sum()
-            # high_clip = (is_high_clipped * completion_mask).sum() / completion_mask.sum()
-            # clip_ratio = (is_region_clipped * completion_mask).sum() / completion_mask.sum()
+            low_clip = (is_low_clipped * completion_mask).sum() / completion_mask.sum()
+            high_clip = (is_high_clipped * completion_mask).sum() / completion_mask.sum()
+            clip_ratio = (is_region_clipped * completion_mask).sum() / completion_mask.sum()
 
-            # gathered_low_clip = self.accelerator.gather_for_metrics(low_clip)
-            # self._metrics[mode]["clip_ratio/low_mean"].append(gathered_low_clip.nanmean().item())
-            # self._metrics[mode]["clip_ratio/low_min"].append(nanmin(gathered_low_clip).item())
-            # gathered_high_clip = self.accelerator.gather_for_metrics(high_clip)
-            # self._metrics[mode]["clip_ratio/high_mean"].append(gathered_high_clip.nanmean().item())
-            # self._metrics[mode]["clip_ratio/high_max"].append(nanmax(gathered_high_clip).item())
-            # gathered_clip_ratio = self.accelerator.gather_for_metrics(clip_ratio)
-            # self._metrics[mode]["clip_ratio/region_mean"].append(gathered_clip_ratio.nanmean().item())
+            gathered_low_clip = self.accelerator.gather_for_metrics(low_clip)
+            self._metrics[mode]["clip_ratio/low_mean"].append(gathered_low_clip.nanmean().item())
+            self._metrics[mode]["clip_ratio/low_min"].append(nanmin(gathered_low_clip).item())
+            gathered_high_clip = self.accelerator.gather_for_metrics(high_clip)
+            self._metrics[mode]["clip_ratio/high_mean"].append(gathered_high_clip.nanmean().item())
+            self._metrics[mode]["clip_ratio/high_max"].append(nanmax(gathered_high_clip).item())
+            gathered_clip_ratio = self.accelerator.gather_for_metrics(clip_ratio)
+            self._metrics[mode]["clip_ratio/region_mean"].append(gathered_clip_ratio.nanmean().item())
 
         return loss
 
