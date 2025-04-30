@@ -849,7 +849,7 @@ class GRPOTrainer(Trainer):
                 - If an int, compute logits for the last logits_to_keep tokens.
                 - If 0, calculate logits for all input_ids (special case). 
                 Only last token logits are needed for generation, and calculating them only for that token can save memory, which becomes pretty significant for long sequences or large vocabulary size. 
-                - If a torch.Tensor, must be 1D corresponding to the indices to keep in the sequence length dimension.
+                - If a torch.Tensor, must be 1D mask of the same length as input_ids, with 1s for tokens to keep and 0s for tokens to ignore.
                 This is useful when using packed tensor format (single dimension for batch and sequence length).
             batch_size (`int`, *optional*): Batch size for processing. If `None`, uses input_ids.size(0).
 
@@ -889,7 +889,7 @@ class GRPOTrainer(Trainer):
                 input_ids_batch = input_ids[i : i + batch_size]
                 # print(f"shape of input_ids_batch: {input_ids_batch.shape}")
                 attention_mask_batch = attention_mask[i : i + batch_size]
-                logits_to_keep_batch = logits_to_keep.unsqueeze(0).expand_as(input_ids_batch) # shape: (batch_size, seq_length)
+                logits_to_keep_batch = logits_to_keep.unsqueeze(0).expand_as(input_ids_batch) # shape: (B, L)
 
                 # Convert boolean mask to indices explicitly before passing to model
                 logits_to_keep_indices = torch.nonzero(logits_to_keep).squeeze(1)
@@ -1301,10 +1301,9 @@ class GRPOTrainer(Trainer):
         Returns:
             dict[str, Union[torch.Tensor, Any]]: The inputs with the generated masks.
                 The returned dictionary contains the following keys:
-                - conversation_ids (torch.Tensor): The input conversation tensor.
-                - prompt_mask (torch.Tensor): The prompt mask tensor.
-                - completion_mask (torch.Tensor): The completion mask tensor.
-                - attention_mask (torch.Tensor): The attention mask for the promt and completion tensors.
+                - conversation_ids (torch.Tensor): The input conversation tensor, shape (B, L).
+                - completion_mask (torch.Tensor): The completion mask tensor, shape (B, L).
+                - attention_mask (torch.Tensor): The attention mask for the promt and completion tensors, shape (B, L).
         """
         batch_size = len(inputs)
         device = self.accelerator.device
@@ -1401,7 +1400,6 @@ class GRPOTrainer(Trainer):
         # Create full tensors with proper alignment
         conversation_ids = torch.zeros((batch_size, total_length), dtype=torch.long, device=device)
         attention_mask = torch.zeros((batch_size, total_length), dtype=torch.long, device=device)
-        prompt_mask = torch.zeros((batch_size, total_length), dtype=torch.bool, device=device)
         completion_mask = torch.zeros((batch_size, total_length), dtype=torch.bool, device=device)
         
         # Track positions for each turn
@@ -1416,11 +1414,6 @@ class GRPOTrainer(Trainer):
             prompt_end_pos = current_pos + p_length
             conversation_ids[:, current_pos:prompt_end_pos] = prompt_ids_by_turn[turn_idx]
             attention_mask[:, current_pos:prompt_end_pos] = prompt_mask_by_turn[turn_idx]
-            
-            # Set prompt mask for valid turns only
-            for b in range(batch_size):
-                if turn_presence[b, turn_idx]:
-                    prompt_mask[b, current_pos:prompt_end_pos] = prompt_mask_by_turn[turn_idx][b].bool()
             
             current_pos = prompt_end_pos
             
@@ -1439,7 +1432,6 @@ class GRPOTrainer(Trainer):
         return {
             "conversation_ids": conversation_ids,
             "attention_mask": attention_mask,
-            "prompt_mask": prompt_mask,
             "completion_mask": completion_mask,
         }
 
@@ -1502,9 +1494,8 @@ class GRPOTrainer(Trainer):
         masks = self._prepare_conversations(conversations)
         conversation_ids = masks["conversation_ids"]
         attention_mask = masks["attention_mask"]
-        prompt_mask = masks["prompt_mask"]
         completion_mask = masks["completion_mask"]
-        logits_to_keep_mask = torch.any(completion_mask, dim=0) # shape (1, total_length)
+        logits_to_keep_mask = torch.any(completion_mask, dim=0) # shape (1, L)
 
         with torch.no_grad():
             # When using num_iterations == 1, old_per_token_logps == per_token_logps, so we can skip it's
@@ -1572,7 +1563,6 @@ class GRPOTrainer(Trainer):
         return {
             "conversation_ids": conversation_ids,
             "attention_mask": attention_mask,
-            "prompt_mask": prompt_mask,
             "completion_mask": completion_mask,
             "advantages": advantages,
             "old_per_token_logps": old_per_token_logps,
@@ -1688,9 +1678,9 @@ class GRPOTrainer(Trainer):
             self._metrics[mode]["clip_ratio/region_mean"].append(gathered_clip_ratio.nanmean().item())
         else:
             input_ids = inputs["conversation_ids"]
-            completion_mask = inputs["completion_mask"] # shape (B, total_completion_length)
+            completion_mask = inputs["completion_mask"] # shape (B, L)
             attention_mask = inputs["attention_mask"] # shape (B, L)
-            logits_to_keep_mask = torch.any(completion_mask, dim=0) # the positions of completions in a multi-turn conversation, shape (1, total_completion_length)
+            logits_to_keep_mask = torch.any(completion_mask, dim=0) # the positions of completions in a multi-turn conversation, shape (1, L)
 
             per_token_logps = self._get_per_token_logps(model, input_ids, attention_mask, logits_to_keep_mask) # shape (batch_size, length_of_logits_to_keep), and the length is the same as completion_mask
 
