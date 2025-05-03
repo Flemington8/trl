@@ -143,6 +143,3 @@ checklink/cookies.txt
 nbs/wandb/
 examples/notebooks/wandb/
 wandb/
-output/
-
-aiopslab/datasets/
