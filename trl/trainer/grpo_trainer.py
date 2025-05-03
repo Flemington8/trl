@@ -46,9 +46,9 @@ from transformers.trainer_utils import seed_worker
 from transformers.utils import is_datasets_available, is_peft_available, is_rich_available
 
 from ..data_utils import apply_chat_template, is_conversational, maybe_apply_chat_template
+from ..extras.conversation_generator import ConversationGenerator
 from ..extras.profiling import profiling_context, profiling_decorator
 from ..extras.vllm_client import VLLMClient
-from ..extras.conversation_generator import ConversationGenerator
 from ..import_utils import is_liger_kernel_available, is_vllm_available
 from ..models import create_reference_model, prepare_deepspeed, prepare_fsdp, unwrap_model_for_generation
 from ..models.utils import _ForwardRedirection
@@ -1785,9 +1785,9 @@ class GRPOTrainer(Trainer):
         # Log the metrics
         mode = "train" if self.model.training else "eval"
 
-            if self.beta != 0.0:
-                mean_kl = (per_token_kl * completion_mask).sum() / completion_mask.sum()
-                self._metrics[mode]["kl"].append(self.accelerator.gather_for_metrics(mean_kl).nanmean().item())
+        if self.beta != 0.0:
+            mean_kl = (per_token_kl * completion_mask).sum() / completion_mask.sum()
+            self._metrics[mode]["kl"].append(self.accelerator.gather_for_metrics(mean_kl).nanmean().item())
 
             # Compute the clipped probability ratios
             is_low_clipped = (coef_1 < 1 - self.epsilon_low) & (advantages.unsqueeze(1) < 0)
