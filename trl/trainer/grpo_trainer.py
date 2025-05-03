@@ -918,15 +918,11 @@ class GRPOTrainer(Trainer):
             # logits_to_keep is a BoolTensor
             for i in range(0, input_ids.size(0), batch_size):
                 input_ids_batch = input_ids[i : i + batch_size]
-                # print(f"shape of input_ids_batch: {input_ids_batch.shape}")
                 attention_mask_batch = attention_mask[i : i + batch_size]
                 logits_to_keep_batch = logits_to_keep.unsqueeze(0).expand_as(input_ids_batch) # shape: (B, L)
 
                 # Convert boolean mask to indices explicitly before passing to model
                 logits_to_keep_indices = torch.nonzero(logits_to_keep).squeeze(1)
-                
-                # print(f"shape of logits_to_keep: {logits_to_keep.shape}")
-                # print(f"shape of logits_to_keep_indices: {logits_to_keep_indices.shape}")
 
                 # logits_to_keep_indices is a tensor of indices, those exact indices are used for advanced indexing. We do not need a separate '+1' then drop one
                 logits = model(
@@ -1376,18 +1372,21 @@ class GRPOTrainer(Trainer):
         self, inputs: list[dict[str, Union[torch.Tensor, Any]]]
     ) -> dict[str, Union[torch.Tensor, Any]]:
         """
-        Generate masks for batched multi-turn conversations with position alignment.
-        
-        Handles conversations with different numbers of turns, ensuring that:
-        - Masks for the nth prompt/completion align positionally across conversations
-        - Conversations with fewer turns have proper masking for missing turns
-        - logits_to_keep_mask correctly identifies only valid completion tokens
+        Process batched multi-turn conversations into aligned tensor representations with appropriate masks.
+
+        This function handles conversations with varying numbers of turns by:
+        1. Separating each conversation into prompt-completion turn pairs
+        2. Tokenizing prompts (with LEFT padding) and completions (with RIGHT padding) separately
+        3. Aligning tokens from the same turn positions across all conversations in the batch
+        4. Creating appropriate masks to identify valid completion tokens for loss calculation
 
         Args:
-            inputs (list[dict[str, Union[torch.Tensor, Any]]]): The inputs for which to generate masks.
-                Each input is a dictionary containing the conversation and other relevant information.
-                - messages (list[dict[str, str]]): The conversation messages.
-                - other keys: Any other keys that are relevant for the model.
+            inputs (list[dict[str, Union[torch.Tensor, Any]]]): The conversations to process.
+                Each input is a dictionary containing:
+                - messages (list[dict[str, str]]): The conversation messages where:
+                    * Messages with role="assistant" are treated as completions
+                    * All other messages (user/system) preceding an assistant message form its prompt
+                - Other metadata fields are preserved but not used in processing
                 Example:
                 [
                     {
@@ -1396,20 +1395,23 @@ class GRPOTrainer(Trainer):
                             {"role": "user", "content": "Hello!"},
                             {"role": "assistant", "content": "Hi there!"},
                             {"role": "user", "content": "How are you?"},
-                            # ... more turns
                             {"role": "assistant", "content": "I'm doing well!"}
                         ],
-                        # Optional metadata fields
                         "problem_id": "k8s_target_port-misconfig-detection-1",
                     },
                     # More conversations...
                 ]
+
         Returns:
-            dict[str, Union[torch.Tensor, Any]]: The inputs with the generated masks.
-                The returned dictionary contains the following keys:
-                - conversation_ids (torch.Tensor): The input conversation tensor, shape (B, L).
-                - completion_mask (torch.Tensor): The completion mask tensor, shape (B, L).
-                - attention_mask (torch.Tensor): The attention mask for the promt and completion tensors, shape (B, L).
+            dict[str, Union[torch.Tensor, Any]]: Processed conversation representations:
+                - conversation_ids (torch.Tensor): Token IDs for the full conversations, shape (B, L)
+                where B is batch size and L is the total sequence length. All turns are
+                aligned at the same positions across the batch.
+                - completion_mask (torch.Tensor): Boolean mask identifying which tokens belong to
+                completions (assistant responses), shape (B, L). Only tokens corresponding to valid
+                turns for each conversation are marked as True.
+                - attention_mask (torch.Tensor): Attention mask for the transformer model, shape (B, L),
+                where 1 indicates valid tokens and 0 indicates padding.
         """
         batch_size = len(inputs)
         device = self.accelerator.device
@@ -1596,12 +1598,12 @@ class GRPOTrainer(Trainer):
         
         batch_size = self.args.per_device_train_batch_size if mode == "train" else self.args.per_device_eval_batch_size
 
-        # Process the conversations to get the prompt and completion IDs
-        masks = self._prepare_conversations(conversations)
-        conversation_ids = masks["conversation_ids"]
-        attention_mask = masks["attention_mask"]
-        completion_mask = masks["completion_mask"]
-        logits_to_keep_mask = torch.any(completion_mask, dim=0) # shape (1, L)
+        # Process the conversations to prepare them for the model
+        conversation_data = self._prepare_conversations(conversations)
+        conversation_ids = conversation_data["conversation_ids"]
+        attention_mask = conversation_data["attention_mask"]
+        completion_mask = conversation_data["completion_mask"]
+        logits_to_keep_mask = torch.any(completion_mask, dim=0) # shape (L,)
 
         with torch.no_grad():
             # When using num_iterations == 1, old_per_token_logps == per_token_logps, so we can skip it's
@@ -1666,10 +1668,15 @@ class GRPOTrainer(Trainer):
         )
         advantages = advantages[process_slice]
 
+        logits_to_keep_mask = logits_to_keep_mask.expand(
+            (conversation_ids.size(0), logits_to_keep_mask.size(0))
+        ) # shape (B, L)
+
         return {
             "conversation_ids": conversation_ids,
             "attention_mask": attention_mask,
             "completion_mask": completion_mask,
+            "logits_to_keep_mask": logits_to_keep_mask,
             "advantages": advantages,
             "old_per_token_logps": old_per_token_logps,
             "ref_per_token_logps": ref_per_token_logps,
@@ -1810,7 +1817,8 @@ class GRPOTrainer(Trainer):
             input_ids = inputs["conversation_ids"]
             completion_mask = inputs["completion_mask"] # shape (B, L)
             attention_mask = inputs["attention_mask"] # shape (B, L)
-            logits_to_keep_mask = torch.any(completion_mask, dim=0) # the positions of completions in a multi-turn conversation, shape (1, L)
+            logits_to_keep_mask = inputs["logits_to_keep_mask"] # shape (B, L)
+            logits_to_keep_mask = logits_to_keep_mask[0] # shape (L,)
 
             per_token_logps = self._get_per_token_logps(model, input_ids, attention_mask, logits_to_keep_mask) # shape (batch_size, length_of_logits_to_keep), and the length is the same as completion_mask
 
@@ -1833,11 +1841,13 @@ class GRPOTrainer(Trainer):
             per_token_loss = -torch.min(per_token_loss1, per_token_loss2) # shape (batch_size, length_of_logits_to_keep)
             if self.beta != 0.0:
                 per_token_loss = per_token_loss + self.beta * per_token_kl
+            
+            # We only need to compute the loss for the completion tokens
+            completion_mask = completion_mask[:, logits_to_keep_mask] # shape (B, length_of_logits_to_keep)
 
             if self.loss_type == "grpo":
                 loss = ((per_token_loss * completion_mask).sum(-1) / completion_mask.sum(-1).clamp(min=1.0)).mean()
             elif self.loss_type == "bnpo":
-                completion_mask = completion_mask[:, logits_to_keep_mask] # shape (B, length_of_logits_to_keep)
                 loss = (per_token_loss * completion_mask).sum() / completion_mask.sum().clamp(min=1.0)
             elif self.loss_type == "dr_grpo":
                 loss = (per_token_loss * completion_mask).sum() / (per_token_loss.size(0) * self.max_completion_length)
