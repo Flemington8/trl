@@ -1675,7 +1675,7 @@ class GRPOTrainer(Trainer):
             "ref_per_token_logps": ref_per_token_logps,
         }
 
-    def compute_liger_loss(self, model, inputs):
+    def compute_liger_loss(self, unwrapped_model, inputs):
         # Compute the per-token log probabilities for the model
         prompt_ids, prompt_mask = inputs["prompt_ids"], inputs["prompt_mask"]
         completion_ids, completion_mask = inputs["completion_ids"], inputs["completion_mask"]
