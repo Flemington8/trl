@@ -958,11 +958,15 @@ class GRPOTrainer(Trainer):
                         continue  # skip FSDP subtrees already traversed
                     visited.add(full_name)
 
-                    if self.vllm_mode == "server" and self.accelerator.is_main_process:
-                        self.vllm_client.update_named_param(full_name, param.data)
-                    elif self.vllm_mode == "colocate":
-                        llm_model = self.llm.llm_engine.model_executor.driver_worker.model_runner.model
-                        llm_model.load_weights([(full_name, param.data)])
+                    if not self.is_conversation:
+                        if self.vllm_mode == "server" and self.accelerator.is_main_process:
+                            self.vllm_client.update_named_param(full_name, param.data)
+                        elif self.vllm_mode == "colocate":
+                            llm_model = self.llm.llm_engine.model_executor.driver_worker.model_runner.model
+                            llm_model.load_weights([(full_name, param.data)])
+                    else:
+                        if self.accelerator.is_main_process:
+                            self.conversation_generator.update_named_param(full_name, param.data)
 
     @profiling_decorator
     def _move_model_to_vllm(self):
@@ -1000,14 +1004,15 @@ class GRPOTrainer(Trainer):
                             continue
                         name = name.replace("modules_to_save.default.", "")
 
-                        if not self.is_conversation and self.accelerator.is_main_process:
+                        if not self.is_conversation:
                             if self.vllm_mode == "server" and self.accelerator.is_main_process:
                                     self.vllm_client.update_named_param(name, param.data)
                             elif self.vllm_mode == "colocate":
                                 llm_model = self.llm.llm_engine.model_executor.driver_worker.model_runner.model
                                 llm_model.load_weights([(name, param.data)])
                         else:
-                            self.conversation_generator.update_named_param(name, param.data)
+                            if self.accelerator.is_main_process:
+                                self.conversation_generator.update_named_param(name, param.data)
                 # Unmerge adapters while parameters are still gathered
                 self.model.unmerge_adapter()
                 # Parameters will automatically be repartitioned when exiting the context
@@ -1018,18 +1023,24 @@ class GRPOTrainer(Trainer):
             else:
                 for name, param in self.model.named_parameters():
                     with gather_if_zero3([param]):
-                        if not self.is_conversation and self.accelerator.is_main_process:
+                        if not self.is_conversation:
                             if self.vllm_mode == "server" and self.accelerator.is_main_process:
                                 self.vllm_client.update_named_param(name, param.data)
                             elif self.vllm_mode == "colocate":
                                 llm_model = self.llm.llm_engine.model_executor.driver_worker.model_runner.model
                                 llm_model.load_weights([(name, param.data)])
                         else:
-                            self.conversation_generator.update_named_param(name, param.data)
+                            if self.accelerator.is_main_process:
+                                self.conversation_generator.update_named_param(name, param.data)
 
-        # Reset cache on main process
-        if self.accelerator.is_main_process:
-            self.vllm_client.reset_prefix_cache()
+        if not self.is_conversation:
+            # Reset cache on main process
+            if self.accelerator.is_main_process:
+                self.vllm_client.reset_prefix_cache()
+        else:
+            # Reset cache on main process
+            if self.accelerator.is_main_process:
+                self.conversation_generator.reset_prefix_cache()
 
     @profiling_decorator
     def _prepare_inputs(
