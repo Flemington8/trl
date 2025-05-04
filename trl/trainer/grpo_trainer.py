@@ -878,8 +878,8 @@ class GRPOTrainer(Trainer):
                 - 1 for tokens to attend to, 0 for padding tokens.
             logits_to_keep (int or torch.Tensor, optional):
                 - If an int, compute logits for the last logits_to_keep tokens.
-                - If 0, calculate logits for all input_ids (special case). 
-                Only last token logits are needed for generation, and calculating them only for that token can save memory, which becomes pretty significant for long sequences or large vocabulary size. 
+                - If 0, calculate logits for all input_ids (special case).
+                Only last token logits are needed for generation, and calculating them only for that token can save memory, which becomes pretty significant for long sequences or large vocabulary size.
                 - If a torch.Tensor, must be 1D mask of the same length as input_ids, with 1s for tokens to keep and 0s for tokens to ignore.
                 This is useful when using packed tensor format (single dimension for batch and sequence length).
             batch_size (`int`, *optional*): Batch size for processing. If `None`, uses input_ids.size(0).
@@ -899,7 +899,7 @@ class GRPOTrainer(Trainer):
                 attention_mask_batch = attention_mask[i : i + batch_size]
 
                 # We add 1 to `logits_to_keep` because the last logits of the sequence is later excluded
-                # The extra +1 when passing logits_to_keep to the model compensates for the fact that the model returns, for each input token, the logits predicting the next token. 
+                # The extra +1 when passing logits_to_keep to the model compensates for the fact that the model returns, for each input token, the logits predicting the next token.
                 # By requesting K+1 logits and then dropping the very last prediction (which corresponds to the token following your final completion token), you end up with exactly K log‐prob entries aligned one‐to‐one with each completion token.
                 logits = model(
                     input_ids=input_ids_batch, attention_mask=attention_mask_batch, logits_to_keep=logits_to_keep + 1
@@ -1083,7 +1083,7 @@ class GRPOTrainer(Trainer):
     ) -> dict[str, Union[torch.Tensor, Any]]:
         """
         Generates completions for the given inputs and scores them.
-        
+
         Args:
             inputs (list[dict[str, Union[torch.Tensor, Any]]]): The inputs for which to generate completions.
                 Each input is a dictionary containing the prompt and other relevant information.
@@ -1415,25 +1415,25 @@ class GRPOTrainer(Trainer):
         """
         batch_size = len(inputs)
         device = self.accelerator.device
-        
+
         # Find the maximum number of turns across all conversations
-        max_turns = max(len([message for message in spec["messages"] if message["role"] == "assistant"]) 
+        max_turns = max(len([message for message in spec["messages"] if message["role"] == "assistant"])
                     for spec in inputs)
-        
+
         # Process each conversation, separating by turns
         all_prompt_texts_by_turn = [[] for _ in range(max_turns)]
         all_completion_texts_by_turn = [[] for _ in range(max_turns)]
-        
+
         # Track which conversations have which turns
         turn_presence = torch.zeros((batch_size, max_turns), dtype=torch.bool, device=device)
-        
+
         for conv_idx, conversation in enumerate(inputs):
             messages = conversation["messages"]
-            
+
             # Group messages into turns
             turns = []
             current_prompt = []
-            
+
             # Process messages to group them into prompt-completion pairs
             for message in messages:
                 if message["role"] == "assistant":
@@ -1442,37 +1442,37 @@ class GRPOTrainer(Trainer):
                 else:
                     # User or system messages form the prompt
                     current_prompt.append(message)
-                
+
             for turn_idx in range(min(len(turns), max_turns)):
                 # Mark this turn as present
                 turn_presence[conv_idx, turn_idx] = True
-                
+
                 # Get prompt and completion for this turn
                 prompt, completion = turns[turn_idx]
-                
+
                 # Apply chat template
                 prompt_dict = {"messages": prompt}
                 completion_dict = {"messages": completion}
-                
+
                 prompt_text = maybe_apply_chat_template(prompt_dict, self.processing_class)["text"]
                 completion_text = maybe_apply_chat_template(completion_dict, self.processing_class)["text"]
-                
+
                 # Add to the appropriate turn lists
                 all_prompt_texts_by_turn[turn_idx].append(prompt_text)
                 all_completion_texts_by_turn[turn_idx].append(completion_text)
-            
+
             # For remaining turns that this conversation doesn't have, add empty placeholders
             for turn_idx in range(len(turns), max_turns):
                 # Add empty strings as placeholders
                 all_prompt_texts_by_turn[turn_idx].append("")
                 all_completion_texts_by_turn[turn_idx].append("")
-        
+
         # Process each turn separately and collect tensors
         prompt_ids_by_turn = []
         prompt_mask_by_turn = []
         completion_ids_by_turn = []
         completion_mask_by_turn = []
-        
+
         for turn_idx in range(max_turns):
             # Tokenize all prompts and completions for this turn
             prompt_inputs = self.processing_class(
@@ -1482,61 +1482,61 @@ class GRPOTrainer(Trainer):
                 padding_side="left",
                 add_special_tokens=True,
             )
-            
+
             completion_inputs = self.processing_class(
                 all_completion_texts_by_turn[turn_idx],
-                return_tensors="pt", 
+                return_tensors="pt",
                 padding=True,
                 padding_side="right",
                 add_special_tokens=True,
             )
-            
+
             # Store the IDs and masks
             prompt_ids_by_turn.append(prompt_inputs["input_ids"])
             prompt_mask_by_turn.append(prompt_inputs["attention_mask"])
             completion_ids_by_turn.append(completion_inputs["input_ids"])
             completion_mask_by_turn.append(completion_inputs["attention_mask"])
-        
+
         # Determine the sizes for full tensors
         turn_prompt_lengths = [ids.size(1) for ids in prompt_ids_by_turn]
         turn_completion_lengths = [ids.size(1) for ids in completion_ids_by_turn]
-        
+
         total_prompt_length = sum(turn_prompt_lengths)
         total_completion_length = sum(turn_completion_lengths)
         total_length = total_prompt_length + total_completion_length
-        
+
         # Create full tensors with proper alignment
         conversation_ids = torch.zeros((batch_size, total_length), dtype=torch.long, device=device)
         attention_mask = torch.zeros((batch_size, total_length), dtype=torch.long, device=device)
         completion_mask = torch.zeros((batch_size, total_length), dtype=torch.bool, device=device)
-        
+
         # Track positions for each turn
         current_pos = 0
-        
+
         # Fill tensors for each turn
         for turn_idx in range(max_turns):
             p_length = turn_prompt_lengths[turn_idx]
             c_length = turn_completion_lengths[turn_idx]
-            
+
             # Fill prompt section
             prompt_end_pos = current_pos + p_length
             conversation_ids[:, current_pos:prompt_end_pos] = prompt_ids_by_turn[turn_idx]
             attention_mask[:, current_pos:prompt_end_pos] = prompt_mask_by_turn[turn_idx]
-            
+
             current_pos = prompt_end_pos
-            
+
             # Fill completion section
             completion_end_pos = current_pos + c_length
             conversation_ids[:, current_pos:completion_end_pos] = completion_ids_by_turn[turn_idx]
             attention_mask[:, current_pos:completion_end_pos] = completion_mask_by_turn[turn_idx]
-            
+
             # Set completion mask for valid turns only
             for b in range(batch_size):
                 if turn_presence[b, turn_idx]:
                     completion_mask[b, current_pos:completion_end_pos] = completion_mask_by_turn[turn_idx][b].bool()
-            
+
             current_pos = completion_end_pos
-        
+
         return {
             "conversation_ids": conversation_ids,
             "attention_mask": attention_mask,
@@ -1562,7 +1562,7 @@ class GRPOTrainer(Trainer):
 
         device = self.accelerator.device
         mode = "eval" if self.control.should_evaluate else "train"
-        
+
         # First, have main process load weights if needed
         if self.state.global_step != self._last_loaded_step:
             self._move_model_to_vllm()
@@ -1595,7 +1595,7 @@ class GRPOTrainer(Trainer):
             (self.accelerator.process_index + 1) * len(inputs),
         )
         conversations = conversations[process_slice]
-        
+
         batch_size = self.args.per_device_train_batch_size if mode == "train" else self.args.per_device_eval_batch_size
 
         # Process the conversations to prepare them for the model
@@ -1614,7 +1614,7 @@ class GRPOTrainer(Trainer):
                 ) # shape (batch_size, logits_to_keep)
             else:
                 old_per_token_logps = None
-            
+
             # Calculate reference model log probabilities if needed (beta > 0)
             if self.beta == 0.0:
                 ref_per_token_logps = None
@@ -1747,7 +1747,7 @@ class GRPOTrainer(Trainer):
             completion_ids, completion_mask = inputs["completion_ids"], inputs["completion_mask"]
             input_ids = torch.cat([prompt_ids, completion_ids], dim=1)
             attention_mask = torch.cat([prompt_mask, completion_mask], dim=1)
-            logits_to_keep = completion_ids.size(1)  # we only need to compute the logits for the completion tokens         
+            logits_to_keep = completion_ids.size(1)  # we only need to compute the logits for the completion tokens
 
             per_token_logps = self._get_per_token_logps(model, input_ids, attention_mask, logits_to_keep) # shape (batch_size, logits_to_keep)
 
@@ -1841,7 +1841,7 @@ class GRPOTrainer(Trainer):
             per_token_loss = -torch.min(per_token_loss1, per_token_loss2) # shape (batch_size, length_of_logits_to_keep)
             if self.beta != 0.0:
                 per_token_loss = per_token_loss + self.beta * per_token_kl
-            
+
             # We only need to compute the loss for the completion tokens
             completion_mask = completion_mask[:, logits_to_keep_mask] # shape (B, length_of_logits_to_keep)
 
