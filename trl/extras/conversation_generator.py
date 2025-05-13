@@ -1,9 +1,9 @@
 import atexit
 import logging
 import time
+from abc import abstractmethod
 from typing import Optional
 
-from abc import abstractmethod
 import torch
 from torch import nn
 
@@ -27,50 +27,6 @@ logger = logging.getLogger(__name__)
 
 
 class ConversationGenerator:
-    """
-    A client class to interact with a vLLM server.
-
-    This class provides methods to generate conversations, initialize and manage weight update groups, and update model
-    weights in a distributed setting. Before using it, start the vLLM server with `trl vllm-serve`.
-
-    Args:
-        host (`str`, *optional*, defaults to `"0.0.0.0"`):
-            IP address of the vLLM server.
-        vllm_server_port (`int`, *optional*, defaults to `8000`):
-            Port number of the vLLM server.
-        group_port (`int`, *optional*, defaults to `51216`):
-            Port number for the weight update group.
-        vllm_server_timeout (`float`, *optional*, defaults to `240.0`):
-            Total timeout duration in seconds to wait for the server to be up. If the server is not up after the
-            timeout, a `ConnectionError` is raised.
-
-    Examples:
-        Run the vLLM server with the model `Qwen/Qwen2.5-7B`:
-
-        ```
-        $ trl vllm-serve --model Qwen/Qwen2.5-7B
-        ...
-        INFO:     Application startup complete.
-        INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
-        ```
-
-        Use the client to generate conversations and update model weights:
-
-        ```python
-        >>> from trl.extras.conversation_generator import ConversationGenerator
-        >>> generator = ConversationGenerator()
-        # TODO: Update the example
-        >>> generator.generate(["Hello, AI!", "Tell me a joke"])
-        [[2980, 498, 1492, 752, 448, 264, 13027, 8645, 30, 358, 2776, 4460, 311, 3270, 264, 2025],
-         [911, 7988, 1251, 382, 3838, 653, 498, 1618, 4325, 879, 2581, 20027, 264, 21428, 30, 362]]
-
-        >>> from transformers import AutoModelForCausalLM
-        >>> model = AutoModelForCausalLM.from_pretrained("Qwen/Qwen2.5-7B", device_map="cuda")
-        >>> generator.init_communicator()
-        >>> generator.update_model_params(model)
-        ```
-    """
-
     def __init__(
         self, vllm_server_host: str = "0.0.0.0", vllm_server_port: int = 8000, group_port: int = 51216, vllm_server_timeout: float = 240.0
     ):
