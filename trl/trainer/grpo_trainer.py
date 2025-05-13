@@ -585,7 +585,7 @@ class GRPOTrainer(Trainer):
         self._textual_logs = {
             "prompt": deque(maxlen=maxlen),
             "completion": deque(maxlen=maxlen),
-            "message": deque(maxlen=maxlen),
+            "conversation": deque(maxlen=maxlen),
             "rewards": defaultdict(lambda: deque(maxlen=maxlen)),
         }
 
