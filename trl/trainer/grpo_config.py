@@ -460,6 +460,13 @@ class GRPOConfig(TrainingArguments):
             "installed, it prints the sample. If `wandb` logging is enabled, it logs it to `wandb`."
         },
     )
+    log_conversations: bool = field(
+        default=False,
+        metadata={
+            "help": "Whether to log a sample of multi-turn conversations every `logging_steps` steps. "
+            "If `wandb` logging is enabled, it logs it to `wandb`."
+        },
+    )
     num_completions_to_print: Optional[int] = field(
         default=None,
         metadata={"help": "Number of completions to print with `rich`. If `None`, all completions are logged."},

@@ -576,6 +576,7 @@ class GRPOTrainer(Trainer):
         self._metrics = {"train": defaultdict(list), "eval": defaultdict(list)}
         self._total_train_tokens = 0
         self.log_completions = args.log_completions
+        self.log_conversations = args.log_conversations
         self.wandb_log_unique_prompts = args.wandb_log_unique_prompts
         self.num_completions_to_print = args.num_completions_to_print
         # maxlen is set to the total number of forward passes per step. This value of `maxlen` ensures we log only the
@@ -584,6 +585,7 @@ class GRPOTrainer(Trainer):
         self._textual_logs = {
             "prompt": deque(maxlen=maxlen),
             "completion": deque(maxlen=maxlen),
+            "message": deque(maxlen=maxlen),
             "rewards": defaultdict(lambda: deque(maxlen=maxlen)),
         }
 
@@ -1683,6 +1685,31 @@ class GRPOTrainer(Trainer):
             (conversation_ids.size(0), logits_to_keep_mask.size(0))
         ) # shape (B, L)
 
+        # Log the metrics
+        if mode == "train":
+            self.state.num_input_tokens_seen += self.accelerator.gather_for_metrics(attention_mask.sum()).sum().item()
+        self._metrics[mode]["num_tokens"] = [self.state.num_input_tokens_seen]
+
+        # log completion lengths, mean, min, max
+        agg_completion_mask = self.accelerator.gather_for_metrics(completion_mask.sum(1))
+        self._metrics[mode]["completions/mean_length"].append(agg_completion_mask.float().mean().item())
+        self._metrics[mode]["completions/min_length"].append(agg_completion_mask.float().min().item())
+        self._metrics[mode]["completions/max_length"].append(agg_completion_mask.float().max().item())
+
+        # Calculate mean reward per function, but only for samples where the function was applied (non-NaN values)
+        for i, reward_func_name in enumerate(self.reward_func_names):
+            mean_rewards = torch.nanmean(rewards_per_func[:, i]).item()
+            self._metrics[mode][f"rewards/{reward_func_name}/mean"].append(mean_rewards)
+            std_rewards = nanstd(rewards_per_func[:, i]).item()
+            self._metrics[mode][f"rewards/{reward_func_name}/std"].append(std_rewards)
+        self._metrics[mode]["reward"].append(mean_grouped_rewards.mean().item())
+        self._metrics[mode]["reward_std"].append(std_grouped_rewards.mean().item())
+
+        # Log multi turn conversation texts
+        self._textual_logs["conversation"].extend(gather_object(conversations))
+        for i, name in enumerate(self.reward_func_names):
+            self._textual_logs["rewards"][name].extend(rewards_per_func[:, i].tolist())
+
         return {
             "conversation_ids": conversation_ids,
             "attention_mask": attention_mask,
@@ -1913,6 +1940,18 @@ class GRPOTrainer(Trainer):
                 if self.wandb_log_unique_prompts:
                     df = df.drop_duplicates(subset=["prompt"])
                 wandb.log({"completions": wandb.Table(dataframe=df)})
+
+        if self.accelerator.is_main_process and self.log_conversations:
+            if self.args.report_to and "wandb" in self.args.report_to and wandb.run is not None:
+                import pandas as pd
+
+                table = {
+                    "step": [str(self.state.global_step)] * len(self._textual_logs["conversation"]),
+                    "conversation": self._textual_logs["conversation"],
+                    **self._textual_logs["rewards"],
+                }
+                df = pd.DataFrame(table)
+                wandb.log({"conversations": wandb.Table(dataframe=df)})
 
     def create_model_card(
         self,
